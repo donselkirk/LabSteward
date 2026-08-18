@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/donselkirk/LabSteward/schemas/config.schema.json",
+  "title": "LabSteward appliance configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "plugins", "servers"],
+  "properties": {
+    "schema": { "const": 1 },
+    "plugins": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "enabled"],
+        "properties": {
+          "version": { "type": "string", "pattern": "^v?[0-9]+\\.[0-9]+\\.[0-9]+$" },
+          "enabled": { "type": "boolean" }
+        }
+      }
+    },
+    "servers": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9._-]{0,63}$" },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["plugin", "endpoint", "permissions"],
+        "properties": {
+          "plugin": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+          "endpoint": { "type": "string", "maxLength": 2048 },
+          "permissions": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^[a-z][a-z0-9.-]{0,63}$" }
+          }
+        }
+      }
+    }
+  }
+}

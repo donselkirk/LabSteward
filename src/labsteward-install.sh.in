@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+source /dev/stdin <<<"$FUNCTIONS_FILE_PATH"
+color
+verb_ip6
+catch_errors
+setting_up_container
+network_check
+update_os
+
+msg_info "Installing LabSteward core dependencies"
+$STD apt-get install -y ca-certificates curl jq python3
+msg_ok "Installed LabSteward core dependencies"
+
+msg_info "Creating the LabSteward security boundary"
+getent group labsteward >/dev/null || groupadd --system labsteward
+id labsteward >/dev/null 2>&1 || useradd --system --gid labsteward --home-dir /var/lib/labsteward \
+  --create-home --shell /usr/sbin/nologin labsteward
+install -d -o root -g root -m 0755 /opt/labsteward /opt/labsteward/lib /opt/labsteward/catalog /opt/labsteward/schemas /opt/labsteward/plugins
+install -d -o root -g labsteward -m 0750 /etc/labsteward /etc/labsteward/secrets
+install -d -o labsteward -g labsteward -m 0700 /var/lib/labsteward
+
+cat >/etc/labsteward/config.json <<'EOF_CONFIG'
+{
+  "schema": 1,
+  "plugins": {},
+  "servers": {}
+}
+EOF_CONFIG
+chown root:labsteward /etc/labsteward/config.json
+chmod 0640 /etc/labsteward/config.json
+
+# LABSTEWARD_INSTALL_MANAGER
+# LABSTEWARD_INSTALL_SELF_UPDATE
+# LABSTEWARD_INSTALL_CATALOG
+# LABSTEWARD_INSTALL_SCHEMA
+
+if [[ -n "${LABSTEWARD_VERSION_URL:-}" ]]; then
+  curl -fsSL --retry 3 --retry-all-errors "$LABSTEWARD_VERSION_URL" -o /opt/labsteward/VERSION
+else
+  printf 'development\n' >/opt/labsteward/VERSION
+fi
+printf '%s\n' "${LABSTEWARD_UPDATE_BASE_URL:-https://github.com/donselkirk/LabSteward/releases/latest/download}" >/opt/labsteward/update.url
+chown -R root:root /opt/labsteward
+find /opt/labsteward -type d -exec chmod 0755 {} +
+find /opt/labsteward -type f -exec chmod go-w {} +
+/usr/local/bin/stewctl validate
+msg_ok "Created the LabSteward security boundary"
+
+msg_info "Configuring LabSteward login banner"
+cat >/etc/profile.d/00-labsteward-details.sh <<'EOF_MOTD'
+#!/usr/bin/env bash
+[[ "${LABSTEWARD_MOTD_SHOWN:-0}" == "1" ]] && return 0
+export LABSTEWARD_MOTD_SHOWN=1
+printf '\n\033[1;92mLabSteward LXC Appliance\033[0m\n'
+printf ' Version: %s\n' "$(/usr/local/bin/stewctl version 2>/dev/null | sed 's/^LabSteward //')"
+printf ' IP Address: %s\n' "$(hostname -I 2>/dev/null | awk '{print $1}')"
+printf ' Configure: stewctl plugin list\n'
+printf ' Validate:  stewctl validate\n\n'
+EOF_MOTD
+chmod 0755 /etc/profile.d/00-labsteward-details.sh
+msg_ok "Configured LabSteward login banner"
+
+motd_ssh
+customize
