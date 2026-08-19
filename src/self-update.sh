@@ -5,6 +5,10 @@ readonly BASE_DIR="${LABSTEWARD_BASE_DIR:-/opt/labsteward}"
 readonly MANAGER_PATH="${LABSTEWARD_MANAGER_PATH:-/usr/local/bin/stewctl}"
 readonly MANAGER_ALIAS_PATH="${LABSTEWARD_MANAGER_ALIAS_PATH:-/usr/local/bin/labsteward}"
 readonly SANITIZER_PATH="${LABSTEWARD_SANITIZER_PATH:-${BASE_DIR}/lib/labsteward_sanitize.py}"
+readonly CORE_PATH="${LABSTEWARD_CORE_FILE:-${BASE_DIR}/lib/labsteward_core.py}"
+readonly MCP_PATH="${LABSTEWARD_MCP_FILE:-${BASE_DIR}/lib/labsteward_mcp.py}"
+readonly SYSTEMD_UNIT_PATH="${LABSTEWARD_SYSTEMD_UNIT:-/etc/systemd/system/labsteward.service}"
+readonly SYSTEMCTL="${LABSTEWARD_SYSTEMCTL:-/usr/bin/systemctl}"
 readonly VERSION_FILE="${LABSTEWARD_VERSION_FILE:-${BASE_DIR}/VERSION}"
 readonly UPDATE_URL_FILE="${BASE_DIR}/update.url"
 readonly DEFAULT_UPDATE_URL="https://github.com/donselkirk/LabSteward/releases/latest/download"
@@ -33,6 +37,8 @@ update_url="${update_url%/}"
 
 stage="$(mktemp -d)"
 backup=""
+runtime_bundle=0
+service_was_active=0
 cleanup() {
   rm -rf "$stage"
   [[ -z "$backup" ]] || rm -rf "$backup"
@@ -82,14 +88,35 @@ if [[ "$update_url" == "$DEFAULT_UPDATE_URL" ]]; then
   asset_url="https://github.com/donselkirk/LabSteward/releases/download/${release_version}"
 fi
 
-for asset in SHA256SUMS stewctl self-update.sh labsteward-sanitize.py plugins.json config.schema.json; do
+download_asset "${asset_url}/SHA256SUMS" "${stage}/SHA256SUMS" "SHA256SUMS"
+required_assets=(stewctl self-update.sh labsteward-sanitize.py plugins.json config.schema.json)
+optional_runtime_assets=(labsteward-core.py labsteward-mcp.py labsteward.service)
+for asset in "${required_assets[@]}"; do
+  grep -q " ${asset}$" "${stage}/SHA256SUMS" || {
+    echo "LabSteward release is missing required checksum metadata for ${asset}." >&2
+    exit 1
+  }
   download_asset "${asset_url}/${asset}" "${stage}/${asset}" "$asset"
 done
+optional_count=0
+for asset in "${optional_runtime_assets[@]}"; do
+  if grep -q " ${asset}$" "${stage}/SHA256SUMS"; then
+    optional_count=$((optional_count + 1))
+  fi
+done
+if ((optional_count != 0 && optional_count != ${#optional_runtime_assets[@]})); then
+  echo "LabSteward release contains an incomplete runtime bundle." >&2
+  exit 1
+fi
+if ((optional_count)); then
+  runtime_bundle=1
+  for asset in "${optional_runtime_assets[@]}"; do
+    download_asset "${asset_url}/${asset}" "${stage}/${asset}" "$asset"
+  done
+fi
 (
   cd "$stage"
-  for asset in VERSION stewctl self-update.sh labsteward-sanitize.py plugins.json config.schema.json; do
-    grep -q " ${asset}$" SHA256SUMS || exit 1
-  done
+  grep -q " VERSION$" SHA256SUMS || exit 1
   sha256sum -c --ignore-missing SHA256SUMS >/dev/null
 ) || {
   echo "LabSteward release assets failed checksum validation." >&2
@@ -102,6 +129,27 @@ rollback() {
   [[ ! -e "${backup}/manager" ]] || cp -a "${backup}/manager" "$MANAGER_PATH"
   [[ ! -e "${backup}/self-update.sh" ]] || cp -a "${backup}/self-update.sh" "${BASE_DIR}/lib/self-update.sh"
   [[ ! -e "${backup}/labsteward_sanitize.py" ]] || cp -a "${backup}/labsteward_sanitize.py" "$SANITIZER_PATH"
+  if ((runtime_bundle)); then
+    if [[ -e "${backup}/labsteward_core.py" ]]; then
+      cp -a "${backup}/labsteward_core.py" "$CORE_PATH"
+    else
+      rm -f "$CORE_PATH"
+    fi
+    if [[ -e "${backup}/labsteward_mcp.py" ]]; then
+      cp -a "${backup}/labsteward_mcp.py" "$MCP_PATH"
+    else
+      rm -f "$MCP_PATH"
+    fi
+    if [[ -e "${backup}/labsteward.service" ]]; then
+      cp -a "${backup}/labsteward.service" "$SYSTEMD_UNIT_PATH"
+    else
+      rm -f "$SYSTEMD_UNIT_PATH"
+    fi
+    "$SYSTEMCTL" daemon-reload >/dev/null 2>&1 || true
+    if ((service_was_active)); then
+      "$SYSTEMCTL" restart labsteward.service >/dev/null 2>&1 || true
+    fi
+  fi
   [[ ! -e "${backup}/plugins.json" ]] || cp -a "${backup}/plugins.json" "${BASE_DIR}/catalog/plugins.json"
   [[ ! -e "${backup}/config.schema.json" ]] || cp -a "${backup}/config.schema.json" "${BASE_DIR}/schemas/config.schema.json"
   [[ ! -e "${backup}/VERSION" ]] || cp -a "${backup}/VERSION" "$VERSION_FILE"
@@ -116,6 +164,14 @@ install -d -m 0755 "$backup" "${BASE_DIR}/lib" "${BASE_DIR}/catalog" "${BASE_DIR
 [[ ! -e "$MANAGER_PATH" ]] || cp -a "$MANAGER_PATH" "${backup}/manager"
 [[ ! -e "${BASE_DIR}/lib/self-update.sh" ]] || cp -a "${BASE_DIR}/lib/self-update.sh" "${backup}/self-update.sh"
 [[ ! -e "$SANITIZER_PATH" ]] || cp -a "$SANITIZER_PATH" "${backup}/labsteward_sanitize.py"
+if ((runtime_bundle)); then
+  if "$SYSTEMCTL" is-active --quiet labsteward.service >/dev/null 2>&1; then
+    service_was_active=1
+  fi
+  [[ ! -e "$CORE_PATH" ]] || cp -a "$CORE_PATH" "${backup}/labsteward_core.py"
+  [[ ! -e "$MCP_PATH" ]] || cp -a "$MCP_PATH" "${backup}/labsteward_mcp.py"
+  [[ ! -e "$SYSTEMD_UNIT_PATH" ]] || cp -a "$SYSTEMD_UNIT_PATH" "${backup}/labsteward.service"
+fi
 [[ ! -e "${BASE_DIR}/catalog/plugins.json" ]] || cp -a "${BASE_DIR}/catalog/plugins.json" "${backup}/plugins.json"
 [[ ! -e "${BASE_DIR}/schemas/config.schema.json" ]] || cp -a "${BASE_DIR}/schemas/config.schema.json" "${backup}/config.schema.json"
 [[ ! -e "$VERSION_FILE" ]] || cp -a "$VERSION_FILE" "${backup}/VERSION"
@@ -124,12 +180,21 @@ install -m 0755 "${stage}/stewctl" "$MANAGER_PATH"
 ln -sfn "$MANAGER_PATH" "$MANAGER_ALIAS_PATH"
 install -m 0755 "${stage}/self-update.sh" "${BASE_DIR}/lib/self-update.sh"
 install -m 0644 "${stage}/labsteward-sanitize.py" "$SANITIZER_PATH"
+if ((runtime_bundle)); then
+  install -m 0644 "${stage}/labsteward-core.py" "$CORE_PATH"
+  install -m 0644 "${stage}/labsteward-mcp.py" "$MCP_PATH"
+  install -D -m 0644 "${stage}/labsteward.service" "$SYSTEMD_UNIT_PATH"
+  "$SYSTEMCTL" daemon-reload
+fi
 install -m 0644 "${stage}/plugins.json" "${BASE_DIR}/catalog/plugins.json"
 install -m 0644 "${stage}/config.schema.json" "${BASE_DIR}/schemas/config.schema.json"
 install -m 0644 "${stage}/VERSION" "$VERSION_FILE"
 printf '%s\n' "$update_url" >"$UPDATE_URL_FILE"
 chmod 0644 "$UPDATE_URL_FILE"
 "$MANAGER_PATH" validate
+if ((runtime_bundle && service_was_active)); then
+  "$SYSTEMCTL" restart labsteward.service
+fi
 trap - ERR
 rm -rf "$backup"
 backup=""

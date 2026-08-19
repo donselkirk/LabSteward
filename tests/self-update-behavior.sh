@@ -9,7 +9,9 @@ manager="$fixture/bin/stewctl"
 manager_alias="$fixture/bin/labsteward"
 config="$fixture/etc/config.json"
 release="$fixture/release"
-mkdir -p "$base/lib" "$base/catalog" "$base/schemas" "$(dirname "$manager")" "$(dirname "$config")" "$release"
+unit="$fixture/systemd/labsteward.service"
+mkdir -p "$base/lib" "$base/catalog" "$base/schemas" "$(dirname "$manager")" \
+  "$(dirname "$config")" "$release" "$(dirname "$unit")"
 
 install -m 0755 "$project_root/src/labsteward-manager.py" "$manager"
 install -m 0755 "$project_root/src/self-update.sh" "$base/lib/self-update.sh"
@@ -22,13 +24,22 @@ printf '{"schema":1,"plugins":{},"servers":{}}\n' >"$config"
 
 build_release() {
   local version="$1"
+  local include_runtime="${2:-0}"
+  local -a assets
   printf '%s\n' "$version" >"$release/VERSION"
   install -m 0755 "$project_root/src/labsteward-manager.py" "$release/stewctl"
   install -m 0755 "$project_root/src/self-update.sh" "$release/self-update.sh"
   install -m 0644 "$project_root/src/labsteward_sanitize.py" "$release/labsteward-sanitize.py"
   install -m 0644 "$project_root/catalog/plugins.json" "$release/plugins.json"
   install -m 0644 "$project_root/schemas/config.schema.json" "$release/config.schema.json"
-  (cd "$release" && sha256sum VERSION stewctl self-update.sh labsteward-sanitize.py plugins.json config.schema.json >SHA256SUMS)
+  assets=(VERSION stewctl self-update.sh labsteward-sanitize.py plugins.json config.schema.json)
+  if ((include_runtime)); then
+    printf '# runtime core %s\n' "$version" >"$release/labsteward-core.py"
+    printf '# runtime MCP %s\n' "$version" >"$release/labsteward-mcp.py"
+    printf '# runtime service %s\n' "$version" >"$release/labsteward.service"
+    assets+=(labsteward-core.py labsteward-mcp.py labsteward.service)
+  fi
+  (cd "$release" && sha256sum "${assets[@]}" >SHA256SUMS)
 }
 
 run_update() {
@@ -39,6 +50,10 @@ run_update() {
   LABSTEWARD_CONFIG_FILE="$config" \
   LABSTEWARD_CATALOG_FILE="$base/catalog/plugins.json" \
   LABSTEWARD_VERSION_FILE="$base/VERSION" \
+  LABSTEWARD_CORE_FILE="$base/lib/labsteward_core.py" \
+  LABSTEWARD_MCP_FILE="$base/lib/labsteward_mcp.py" \
+  LABSTEWARD_SYSTEMD_UNIT="$unit" \
+  LABSTEWARD_SYSTEMCTL=/bin/true \
   bash "$base/lib/self-update.sh" "$@"
 }
 
@@ -76,27 +91,47 @@ grep -q 'Refusing to downgrade' "$fixture/downgrade-error"
 grep -qx 'v0.1.1' "$base/VERSION"
 assert_no_rollback_dirs
 
-build_release v0.1.2
+build_release v0.1.2 1
+run_update | grep -q 'Updated LabSteward core to v0.1.2.'
+grep -qx 'v0.1.2' "$base/VERSION"
+grep -qx '# runtime core v0.1.2' "$base/lib/labsteward_core.py"
+grep -qx '# runtime MCP v0.1.2' "$base/lib/labsteward_mcp.py"
+grep -qx '# runtime service v0.1.2' "$unit"
+assert_no_rollback_dirs
+
+build_release v0.1.1
+if run_update 2>"$fixture/runtime-downgrade-error"; then
+  echo "The updater must reject a downgrade after adding the runtime bundle." >&2
+  exit 1
+fi
+grep -q 'Refusing to downgrade' "$fixture/runtime-downgrade-error"
+grep -qx 'v0.1.2' "$base/VERSION"
+
+build_release v0.1.3 1
 printf '{"schema":999,"plugins":[]}\n' >"$release/plugins.json"
-(cd "$release" && sha256sum VERSION stewctl self-update.sh labsteward-sanitize.py plugins.json config.schema.json >SHA256SUMS)
+(cd "$release" && sha256sum VERSION stewctl self-update.sh labsteward-sanitize.py \
+  plugins.json config.schema.json labsteward-core.py labsteward-mcp.py labsteward.service >SHA256SUMS)
 if run_update >"$fixture/rollback-output" 2>"$fixture/rollback-error"; then
   echo "Post-update validation must reject an invalid catalog." >&2
   exit 1
 fi
 grep -q 'restoring the previous LabSteward core' "$fixture/rollback-error"
-grep -qx 'v0.1.1' "$base/VERSION"
+grep -qx 'v0.1.2' "$base/VERSION"
+grep -qx '# runtime core v0.1.2' "$base/lib/labsteward_core.py"
 python3 -m json.tool "$base/catalog/plugins.json" >/dev/null
 assert_no_rollback_dirs
 
-build_release v0.1.3
+build_release v0.1.4 1
 printf 'this is not valid python\n' >"$release/labsteward-sanitize.py"
-(cd "$release" && sha256sum VERSION stewctl self-update.sh labsteward-sanitize.py plugins.json config.schema.json >SHA256SUMS)
+(cd "$release" && sha256sum VERSION stewctl self-update.sh labsteward-sanitize.py \
+  plugins.json config.schema.json labsteward-core.py labsteward-mcp.py labsteward.service >SHA256SUMS)
 if run_update >"$fixture/sanitizer-rollback-output" 2>"$fixture/sanitizer-rollback-error"; then
   echo "Post-update validation must reject an invalid sanitizer." >&2
   exit 1
 fi
 grep -q 'restoring the previous LabSteward core' "$fixture/sanitizer-rollback-error"
-grep -qx 'v0.1.1' "$base/VERSION"
+grep -qx 'v0.1.2' "$base/VERSION"
+grep -qx '# runtime MCP v0.1.2' "$base/lib/labsteward_mcp.py"
 python3 -m py_compile "$base/lib/labsteward_sanitize.py"
 assert_no_rollback_dirs
 
