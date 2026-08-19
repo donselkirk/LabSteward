@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 
 if [[ -n "${LABSTEWARD_BUILD_FUNC_PATH:-}" ]]; then
+  # shellcheck disable=SC1090
   source "$LABSTEWARD_BUILD_FUNC_PATH"
 else
+  # shellcheck disable=SC1090
   source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
 fi
 

@@ -37,15 +37,19 @@ run_manager client add agent1 --source 192.0.2.40 >"$fixture/client-add"
 token="$(tail -n 1 "$fixture/client-add")"
 [[ "$token" =~ ^lst_[A-Za-z0-9_-]{43}$ ]]
 grep -q $'^agent1\tenabled\t192.0.2.40/32\t0 server grant(s)$' < <(run_manager client list)
-! grep -qF "$token" "$fixture/etc/config.json"
-! grep -qF "$token" "$fixture/etc/secrets/clients/agent1.json"
+if grep -qF "$token" "$fixture/etc/config.json" "$fixture/etc/secrets/clients/agent1.json"; then
+  echo "A plaintext client token must never be stored." >&2
+  exit 1
+fi
 run_manager validate | grep -q '^PASS:'
 run_manager client rotate-token agent1 >"$fixture/client-rotate"
 rotated_token="$(tail -n 1 "$fixture/client-rotate")"
 [[ "$rotated_token" =~ ^lst_[A-Za-z0-9_-]{43}$ ]]
 [[ "$rotated_token" != "$token" ]]
-! grep -qF "$rotated_token" "$fixture/etc/config.json"
-! grep -qF "$rotated_token" "$fixture/etc/secrets/clients/agent1.json"
+if grep -qF "$rotated_token" "$fixture/etc/config.json" "$fixture/etc/secrets/clients/agent1.json"; then
+  echo "A rotated plaintext client token must never be stored." >&2
+  exit 1
+fi
 run_manager client source set agent1 192.0.2.41/32 | grep -q '^Set 1 source restriction'
 grep -q $'^agent1\tenabled\t192.0.2.41/32\t0 server grant(s)$' < <(run_manager client list)
 if run_manager client permission set agent1 missing audit.node 2>"$fixture/grant-error"; then

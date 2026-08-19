@@ -62,10 +62,13 @@ fi
 
 patched_build="$(mktemp)"
 cp "$build_func" "$patched_build"
+# The sed expressions intentionally match literal variable references in the reviewed helper.
+# shellcheck disable=SC2016
 sed -i \
   -e 's|"$COMMUNITY_SCRIPTS_URL/install/${var_install}.sh"|"$LABSTEWARD_INSTALL_URL"|g' \
   -e 's|"https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/install/${var_install}.sh"|"$LABSTEWARD_INSTALL_URL"|g' \
   "$patched_build"
+# shellcheck disable=SC2016
 redirect_count="$(grep -c 'curl -fsSL "$LABSTEWARD_INSTALL_URL"' "$patched_build" || true)"
 if [[ "$redirect_count" -lt 2 ]]; then
   echo "Unable to redirect the Community Scripts installer URL; review upstream build.func." >&2
@@ -77,7 +80,9 @@ export LABSTEWARD_INSTALL_URL="$install_url"
 export LABSTEWARD_VERSION_URL="$version_url"
 
 if [[ -f "$ct_url" ]]; then
+  # shellcheck disable=SC1090
   source "$ct_url"
 else
+  # shellcheck disable=SC1090
   source <(curl -fsSL --retry 3 --retry-all-errors "$ct_url")
 fi

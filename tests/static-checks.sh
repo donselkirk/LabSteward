@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# This test intentionally searches for literal shell expressions in generated inputs.
+# shellcheck disable=SC2016
 set -Eeuo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
