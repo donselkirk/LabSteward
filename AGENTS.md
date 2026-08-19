@@ -13,6 +13,8 @@ credentials, and sanitized results.
 - Credentials must be entered inside the LXC and stored outside release files.
 - Every action result must use an explicit output allowlist and pass through the
   core sanitizer before it is logged or returned.
+- Remote callers must satisfy both source-network and cryptographic identity
+  checks, and their grants must remain subsets of server permissions.
 - A gateway hosted by a managed system must never receive mutation privileges
   for that host.
 - Every release must pass generated-artifact, syntax, behavior, checksum, and

@@ -15,6 +15,43 @@ Plugin installation does not grant access to a server. Registering a server
 does not grant permissions. Granting permissions does not create credentials.
 Each transition is explicit and independently auditable.
 
+## Remote client boundary
+
+Remote access is disabled until a transport is explicitly configured. Every
+remote client has a unique high-entropy token, one or more source IP/CIDR
+restrictions, and per-server permission grants. Client grants must be a subset
+of the server's plugin permissions. New clients begin with no server grants.
+
+The transport must obtain the source address from the authenticated socket peer,
+not an untrusted forwarding header, and must require TLS. It must verify token
+hashes using constant-time comparison, apply rate limits, audit authentication
+failures without recording tokens, and pass accepted requests through the same
+dispatcher used by local commands. Revocation disables the client and removes
+its stored token verifier. Mutual TLS may be added as an optional stronger client
+identity layer, but it does not replace source restrictions or action grants.
+
+Administrative commands are:
+
+```text
+stewctl client add CLIENT --source IP_OR_CIDR
+stewctl client list
+stewctl client source set CLIENT IP_OR_CIDR ...
+stewctl client permission set CLIENT SERVER PERMISSION ...
+stewctl client rotate-token CLIENT
+stewctl client revoke CLIENT --yes
+```
+
+Tokens are shown once during local client creation or rotation. Plaintext tokens
+are never stored by LabSteward; only a verifier readable by the unprivileged
+runtime is retained inside the LXC.
+
+## Core health check
+
+`stewctl status` validates the configuration registries, plugin catalog,
+sanitizer, client token metadata protections, and cross-scope permission
+relationships. It requires no plugins, servers, clients, credentials, or remote
+transport, so a fresh default installation can verify its core independently.
+
 ## Planned plugin package contract
 
 Every plugin release will contain a manifest declaring its ID, version, core

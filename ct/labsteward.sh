@@ -40,5 +40,5 @@ description
 
 msg_ok "Completed successfully!\n"
 echo -e "${CREATING}${GN}${APP} core has been initialized.${CL}"
-echo -e "${INFO}${YW}Inside the LXC, start with:${CL} ${BGN}stewctl plugin list${CL}"
+echo -e "${INFO}${YW}Inside the LXC, start with:${CL} ${BGN}stewctl status${CL}"
 echo -e "${INFO}${YW}No management credentials or live plugins were installed.${CL}"

@@ -30,6 +30,12 @@ stewctl plugin list
 stewctl plugin install proxmox
 stewctl server add pve1 --plugin proxmox --endpoint https://pve1.example.test:8006
 stewctl permission set pve1 audit.node audit.lxc audit.storage
+stewctl client add automation1 --source 192.0.2.40/32
+stewctl client permission set automation1 pve1 audit.node audit.lxc
+stewctl client source set automation1 192.0.2.40/32
+stewctl client rotate-token automation1
+stewctl client revoke automation1 --yes
+stewctl status
 stewctl validate
 stewctl self-update
 ```
@@ -42,6 +48,10 @@ catalog. It will never accept an arbitrary URL. Credential entry will be added
 with each plugin and will read secrets from a terminal or standard input, never
 from command-line arguments.
 
+Client creation generates a high-entropy token and displays it once to the local
+administrator. Only its SHA-256 verifier is stored inside the LXC. A new client
+has no server permissions until they are explicitly granted.
+
 ## Security boundaries
 
 - Release and plugin code is installed under `/opt/labsteward`, owned by root, and
@@ -52,6 +62,9 @@ from command-line arguments.
 - The runtime account has no interactive login and cannot install or update
   plugins.
 - A server registration names one plugin and an explicit permission set.
+- Remote clients require both a source IP/CIDR match and a unique token. Their
+  permissions must be a subset of the permissions already granted to a server.
+- Revoking a client disables its grants and removes its stored token verifier.
 - No plugin may expose arbitrary shell execution, arbitrary requests, or raw
   secret/configuration reads.
 - Plugins must construct responses from explicit output-field allowlists. The
@@ -59,7 +72,8 @@ from command-line arguments.
   cookies, private keys, embedded URL credentials, and common inline tokens
   before a result can be logged or returned.
 - Transport is configured separately; the appliance creates no application
-  listener during initial bootstrap.
+  listener during initial bootstrap. `stewctl status` validates the core without
+  requiring any installed plugins or registered servers.
 
 ## Development
 

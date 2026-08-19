@@ -20,6 +20,11 @@ grep -q 'sha256sum -c --ignore-missing SHA256SUMS' labsteward.sh
 grep -q 'Refusing to downgrade LabSteward' src/self-update.sh
 grep -q 'ln -sfn /usr/local/bin/stewctl /usr/local/bin/labsteward' tools/build-artifacts.sh
 grep -q 'prog="stewctl"' src/labsteward-manager.py
+grep -q 'commands.add_parser("status"' src/labsteward-manager.py
+grep -q 'client_commands.add_parser("revoke")' src/labsteward-manager.py
+grep -q '/usr/local/bin/stewctl status' src/labsteward-install.sh.in
+grep -q '"clients": {}' src/labsteward-install.sh.in
+grep -q -- '-m 2750 /etc/labsteward/secrets /etc/labsteward/secrets/clients' src/labsteward-install.sh.in
 grep -q 'LABSTEWARD_INSTALL_SANITIZER' src/labsteward-install.sh.in
 grep -q -- '--shell /usr/sbin/nologin labsteward' src/labsteward-install.sh.in
 grep -q 'Plugin is not in the approved release catalog' src/labsteward-manager.py
