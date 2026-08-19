@@ -566,6 +566,12 @@ def command_self_update(_: argparse.Namespace) -> None:
     os.execv(str(SELF_UPDATE), [str(SELF_UPDATE)])
 
 
+def command_update_check(_: argparse.Namespace) -> None:
+    if not SELF_UPDATE.is_file():
+        raise UserError(f"Self-update helper is missing: {SELF_UPDATE}")
+    os.execv(str(SELF_UPDATE), [str(SELF_UPDATE), "--check"])
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="stewctl", description="Manage the LabSteward appliance")
     commands = root.add_subparsers(dest="command", required=True)
@@ -574,6 +580,11 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("configure").set_defaults(handler=command_configure)
     commands.add_parser("validate").set_defaults(handler=command_validate)
     commands.add_parser("self-update").set_defaults(handler=command_self_update)
+
+    update = commands.add_parser("update")
+    update_commands = update.add_subparsers(dest="update_command", required=True)
+    update_commands.add_parser("check").set_defaults(handler=command_update_check)
+    update_commands.add_parser("apply").set_defaults(handler=command_self_update)
 
     plugin = commands.add_parser("plugin", aliases=["plugins"])
     plugin_commands = plugin.add_subparsers(dest="plugin_command", required=True)
@@ -665,8 +676,18 @@ readonly VERSION_FILE="${LABSTEWARD_VERSION_FILE:-${BASE_DIR}/VERSION}"
 readonly UPDATE_URL_FILE="${BASE_DIR}/update.url"
 readonly DEFAULT_UPDATE_URL="https://github.com/donselkirk/LabSteward/releases/latest/download"
 
+check_only=0
+case "${1:-}" in
+  "") ;;
+  --check) check_only=1 ;;
+  *)
+    echo "Usage: stewctl update check | stewctl update apply" >&2
+    exit 2
+    ;;
+esac
+
 [[ $EUID -eq 0 || "${LABSTEWARD_ALLOW_NON_ROOT:-0}" == "1" ]] || {
-  echo "Run stewctl self-update as root." >&2
+  echo "Run LabSteward update commands as root." >&2
   exit 1
 }
 
@@ -678,34 +699,33 @@ update_url="${update_url:-$DEFAULT_UPDATE_URL}"
 update_url="${update_url%/}"
 
 stage="$(mktemp -d)"
-backup="$(mktemp -d "${BASE_DIR}/.rollback.XXXXXX")"
-trap 'rm -rf "$stage"' EXIT
+backup=""
+cleanup() {
+  rm -rf "$stage"
+  [[ -z "$backup" ]] || rm -rf "$backup"
+}
+trap cleanup EXIT
 
-curl -fsSL --retry 3 --retry-all-errors "${update_url}/VERSION" -o "${stage}/VERSION"
+download_asset() {
+  local url="$1"
+  local destination="$2"
+  local label="$3"
+  if curl -fsSL --retry 3 --retry-all-errors "$url" -o "$destination"; then
+    return 0
+  fi
+  echo "Unable to download ${label} from the configured update source." >&2
+  if [[ "$url" == https://github.com/donselkirk/LabSteward/* ]]; then
+    echo "Private GitHub releases are unavailable to the unauthenticated updater; use a reviewed manual upgrade until the repository is public." >&2
+  fi
+  return 1
+}
+
+download_asset "${update_url}/VERSION" "${stage}/VERSION" "release metadata"
 grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' "${stage}/VERSION" || {
   echo "Release version metadata is invalid." >&2
   exit 1
 }
 release_version="$(<"${stage}/VERSION")"
-asset_url="$update_url"
-if [[ "$update_url" == "$DEFAULT_UPDATE_URL" ]]; then
-  asset_url="https://github.com/donselkirk/LabSteward/releases/download/${release_version}"
-fi
-
-for asset in SHA256SUMS stewctl self-update.sh labsteward-sanitize.py plugins.json config.schema.json; do
-  curl -fsSL --retry 3 --retry-all-errors "${asset_url}/${asset}" -o "${stage}/${asset}"
-done
-(
-  cd "$stage"
-  for asset in VERSION stewctl self-update.sh labsteward-sanitize.py plugins.json config.schema.json; do
-    grep -q " ${asset}$" SHA256SUMS || exit 1
-  done
-  sha256sum -c --ignore-missing SHA256SUMS >/dev/null
-) || {
-  echo "LabSteward release assets failed checksum validation." >&2
-  exit 1
-}
-
 current_version="v0.0.0"
 if [[ -r "$VERSION_FILE" ]] && grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' "$VERSION_FILE"; then
   current_version="$(<"$VERSION_FILE")"
@@ -719,6 +739,29 @@ if [[ "$release_version" == "$current_version" ]]; then
   echo "LabSteward is already current at ${release_version}."
   exit 0
 fi
+if ((check_only)); then
+  echo "LabSteward update available: ${current_version} -> ${release_version}."
+  exit 0
+fi
+
+asset_url="$update_url"
+if [[ "$update_url" == "$DEFAULT_UPDATE_URL" ]]; then
+  asset_url="https://github.com/donselkirk/LabSteward/releases/download/${release_version}"
+fi
+
+for asset in SHA256SUMS stewctl self-update.sh labsteward-sanitize.py plugins.json config.schema.json; do
+  download_asset "${asset_url}/${asset}" "${stage}/${asset}" "$asset"
+done
+(
+  cd "$stage"
+  for asset in VERSION stewctl self-update.sh labsteward-sanitize.py plugins.json config.schema.json; do
+    grep -q " ${asset}$" SHA256SUMS || exit 1
+  done
+  sha256sum -c --ignore-missing SHA256SUMS >/dev/null
+) || {
+  echo "LabSteward release assets failed checksum validation." >&2
+  exit 1
+}
 
 rollback() {
   trap - ERR
@@ -731,8 +774,11 @@ rollback() {
   [[ ! -e "${backup}/VERSION" ]] || cp -a "${backup}/VERSION" "$VERSION_FILE"
   [[ ! -e "${backup}/update.url" ]] || cp -a "${backup}/update.url" "$UPDATE_URL_FILE"
   rm -rf "$backup"
+  backup=""
 }
 
+backup="$(mktemp -d "${BASE_DIR}/.rollback.XXXXXX")"
+trap rollback ERR
 install -d -m 0755 "$backup" "${BASE_DIR}/lib" "${BASE_DIR}/catalog" "${BASE_DIR}/schemas"
 [[ ! -e "$MANAGER_PATH" ]] || cp -a "$MANAGER_PATH" "${backup}/manager"
 [[ ! -e "${BASE_DIR}/lib/self-update.sh" ]] || cp -a "${BASE_DIR}/lib/self-update.sh" "${backup}/self-update.sh"
@@ -741,7 +787,6 @@ install -d -m 0755 "$backup" "${BASE_DIR}/lib" "${BASE_DIR}/catalog" "${BASE_DIR
 [[ ! -e "${BASE_DIR}/schemas/config.schema.json" ]] || cp -a "${BASE_DIR}/schemas/config.schema.json" "${backup}/config.schema.json"
 [[ ! -e "$VERSION_FILE" ]] || cp -a "$VERSION_FILE" "${backup}/VERSION"
 [[ ! -e "$UPDATE_URL_FILE" ]] || cp -a "$UPDATE_URL_FILE" "${backup}/update.url"
-trap rollback ERR
 install -m 0755 "${stage}/stewctl" "$MANAGER_PATH"
 ln -sfn "$MANAGER_PATH" "$MANAGER_ALIAS_PATH"
 install -m 0755 "${stage}/self-update.sh" "${BASE_DIR}/lib/self-update.sh"
@@ -754,6 +799,7 @@ chmod 0644 "$UPDATE_URL_FILE"
 "$MANAGER_PATH" validate
 trap - ERR
 rm -rf "$backup"
+backup=""
 echo "Updated LabSteward core to ${release_version}."
 EOF_LABSTEWARD_UPDATE
 chmod 0755 /opt/labsteward/lib/self-update.sh

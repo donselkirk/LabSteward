@@ -20,6 +20,8 @@ grep -q 'var_nesting="${var_nesting:-1}"' ct/labsteward.sh
 grep -q 'LABSTEWARD_INSTALL_URL' labsteward.sh
 grep -q 'sha256sum -c --ignore-missing SHA256SUMS' labsteward.sh
 grep -q 'Refusing to downgrade LabSteward' src/self-update.sh
+grep -q 'Private GitHub releases are unavailable' src/self-update.sh
+grep -q 'update_commands.add_parser("check")' src/labsteward-manager.py
 grep -q 'ln -sfn /usr/local/bin/stewctl /usr/local/bin/labsteward' tools/build-artifacts.sh
 grep -q 'prog="stewctl"' src/labsteward-manager.py
 grep -q 'commands.add_parser("status"' src/labsteward-manager.py

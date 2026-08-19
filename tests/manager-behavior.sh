@@ -24,6 +24,7 @@ run_manager() {
 
 [[ "$(run_manager version)" == "LabSteward v0.1.0" ]]
 run_manager configure | grep -q '^LabSteward configuration$'
+run_manager update --help | grep -q '{check,apply}'
 run_manager validate | grep -q '^PASS:'
 run_manager status | grep -q '^LabSteward core: healthy$'
 mv "$fixture/opt/lib/labsteward_sanitize.py" "$fixture/opt/lib/labsteward_sanitize.py.missing"

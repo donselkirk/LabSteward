@@ -52,6 +52,20 @@ sanitizer, client token metadata protections, and cross-scope permission
 relationships. It requires no plugins, servers, clients, credentials, or remote
 transport, so a fresh default installation can verify its core independently.
 
+## Core updates
+
+`stewctl update check` downloads only version metadata and does not create a
+rollback directory or modify installed files. Applying an update downloads and
+checksum-verifies the complete core asset set before creating a rollback copy.
+Failed validation restores the previous files, and every exit path removes its
+temporary staging and rollback directories.
+
+The updater is deliberately unauthenticated and does not accept repository
+tokens through arguments or environment variables. Private GitHub releases
+therefore produce a clear unavailable-source result and require a reviewed
+manual upgrade. This avoids placing a repository credential in the appliance;
+normal self-updates become available when the release source is public.
+
 ## Planned plugin package contract
 
 Every plugin release will contain a manifest declaring its ID, version, core

@@ -530,6 +530,12 @@ def command_self_update(_: argparse.Namespace) -> None:
     os.execv(str(SELF_UPDATE), [str(SELF_UPDATE)])
 
 
+def command_update_check(_: argparse.Namespace) -> None:
+    if not SELF_UPDATE.is_file():
+        raise UserError(f"Self-update helper is missing: {SELF_UPDATE}")
+    os.execv(str(SELF_UPDATE), [str(SELF_UPDATE), "--check"])
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="stewctl", description="Manage the LabSteward appliance")
     commands = root.add_subparsers(dest="command", required=True)
@@ -538,6 +544,11 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("configure").set_defaults(handler=command_configure)
     commands.add_parser("validate").set_defaults(handler=command_validate)
     commands.add_parser("self-update").set_defaults(handler=command_self_update)
+
+    update = commands.add_parser("update")
+    update_commands = update.add_subparsers(dest="update_command", required=True)
+    update_commands.add_parser("check").set_defaults(handler=command_update_check)
+    update_commands.add_parser("apply").set_defaults(handler=command_self_update)
 
     plugin = commands.add_parser("plugin", aliases=["plugins"])
     plugin_commands = plugin.add_subparsers(dest="plugin_command", required=True)

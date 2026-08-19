@@ -37,7 +37,8 @@ stewctl client rotate-token automation1
 stewctl client revoke automation1 --yes
 stewctl status
 stewctl validate
-stewctl self-update
+stewctl update check
+stewctl update apply
 ```
 
 `labsteward` is installed as a compatibility and discoverability alias for
@@ -51,6 +52,13 @@ from command-line arguments.
 Client creation generates a high-entropy token and displays it once to the local
 administrator. Only its SHA-256 verifier is stored inside the LXC. A new client
 has no server permissions until they are explicitly granted.
+
+`stewctl update check` reads only release version metadata and never creates a
+rollback copy. `stewctl update apply` downloads and verifies all release assets
+before creating a rollback copy or replacing core files. The `stewctl
+self-update` command remains as a compatibility alias for applying an update.
+Private GitHub releases are intentionally unsupported by the unauthenticated
+updater; use reviewed manual upgrades until the repository becomes public.
 
 ## Security boundaries
 

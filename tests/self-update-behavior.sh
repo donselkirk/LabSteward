@@ -39,13 +39,33 @@ run_update() {
   LABSTEWARD_CONFIG_FILE="$config" \
   LABSTEWARD_CATALOG_FILE="$base/catalog/plugins.json" \
   LABSTEWARD_VERSION_FILE="$base/VERSION" \
-  bash "$base/lib/self-update.sh"
+  bash "$base/lib/self-update.sh" "$@"
+}
+
+assert_no_rollback_dirs() {
+  local rollback_dir
+  rollback_dir="$(find "$base" -maxdepth 1 -type d -name '.rollback.*' -print -quit)"
+  if [[ -n "$rollback_dir" ]]; then
+    echo "The updater left a rollback directory behind: $rollback_dir" >&2
+    exit 1
+  fi
 }
 
 build_release v0.1.1
+run_update --check | grep -q 'update available: v0.1.0 -> v0.1.1.'
+grep -qx 'v0.1.0' "$base/VERSION"
+assert_no_rollback_dirs
 run_update | grep -q 'Updated LabSteward core to v0.1.1.'
 grep -qx 'v0.1.1' "$base/VERSION"
 [[ "$(readlink "$manager_alias")" == "$manager" ]]
+assert_no_rollback_dirs
+
+build_release v0.1.1
+rm "$release/SHA256SUMS" "$release/stewctl" "$release/self-update.sh" \
+  "$release/labsteward-sanitize.py" "$release/plugins.json" "$release/config.schema.json"
+run_update --check | grep -q 'already current at v0.1.1.'
+run_update | grep -q 'already current at v0.1.1.'
+assert_no_rollback_dirs
 
 build_release v0.1.0
 if run_update 2>"$fixture/downgrade-error"; then
@@ -54,6 +74,7 @@ if run_update 2>"$fixture/downgrade-error"; then
 fi
 grep -q 'Refusing to downgrade' "$fixture/downgrade-error"
 grep -qx 'v0.1.1' "$base/VERSION"
+assert_no_rollback_dirs
 
 build_release v0.1.2
 printf '{"schema":999,"plugins":[]}\n' >"$release/plugins.json"
@@ -65,6 +86,7 @@ fi
 grep -q 'restoring the previous LabSteward core' "$fixture/rollback-error"
 grep -qx 'v0.1.1' "$base/VERSION"
 python3 -m json.tool "$base/catalog/plugins.json" >/dev/null
+assert_no_rollback_dirs
 
 build_release v0.1.3
 printf 'this is not valid python\n' >"$release/labsteward-sanitize.py"
@@ -76,4 +98,13 @@ fi
 grep -q 'restoring the previous LabSteward core' "$fixture/sanitizer-rollback-error"
 grep -qx 'v0.1.1' "$base/VERSION"
 python3 -m py_compile "$base/lib/labsteward_sanitize.py"
+assert_no_rollback_dirs
+
+printf 'file://%s/missing-release\n' "$fixture" >"$base/update.url"
+if run_update --check >"$fixture/missing-output" 2>"$fixture/missing-error"; then
+  echo "An inaccessible update source must fail clearly." >&2
+  exit 1
+fi
+grep -q 'Unable to download release metadata' "$fixture/missing-error"
+assert_no_rollback_dirs
 echo "Self-update behavior checks passed."
