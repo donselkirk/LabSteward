@@ -4,10 +4,13 @@ set -Eeuo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fixture="$(mktemp -d)"
 trap 'rm -rf "$fixture"' EXIT
-mkdir -p "$fixture/opt/catalog" "$fixture/opt/lib" "$fixture/opt/schemas" "$fixture/etc/secrets/clients"
+mkdir -p "$fixture/opt/catalog" "$fixture/opt/lib" "$fixture/opt/schemas" "$fixture/etc/secrets/clients" "$fixture/systemd"
 cp "$project_root/catalog/plugins.json" "$fixture/opt/catalog/plugins.json"
 cp "$project_root/src/labsteward_sanitize.py" "$fixture/opt/lib/labsteward_sanitize.py"
+cp "$project_root/src/labsteward_core.py" "$fixture/opt/lib/labsteward_core.py"
+cp "$project_root/src/labsteward_mcp.py" "$fixture/opt/lib/labsteward_mcp.py"
 cp "$project_root/src/self-update.sh" "$fixture/opt/lib/self-update.sh"
+cp "$project_root/src/labsteward.service" "$fixture/systemd/labsteward.service"
 cp "$project_root/schemas/config.schema.json" "$fixture/opt/schemas/config.schema.json"
 printf 'v0.1.0\n' >"$fixture/opt/VERSION"
 printf '{"schema":1,"plugins":{},"servers":{},"clients":{}}\n' >"$fixture/etc/config.json"
@@ -19,6 +22,12 @@ run_manager() {
   LABSTEWARD_CATALOG_FILE="$fixture/opt/catalog/plugins.json" \
   LABSTEWARD_VERSION_FILE="$fixture/opt/VERSION" \
   LABSTEWARD_CLIENT_SECRETS_DIR="$fixture/etc/secrets/clients" \
+  LABSTEWARD_TRANSPORT_CONFIG="$fixture/etc/transport.json" \
+  LABSTEWARD_TLS_DIR="$fixture/etc/secrets/tls" \
+  LABSTEWARD_SYSTEMD_UNIT="$fixture/systemd/labsteward.service" \
+  LABSTEWARD_SYSTEMCTL="$project_root/tests/mock-systemctl.sh" \
+  LABSTEWARD_TEST_SYSTEMCTL_STATE="$fixture/systemctl.state" \
+  LABSTEWARD_ALLOW_LOOPBACK=1 \
   python3 "$project_root/src/labsteward-manager.py" "$@"
 }
 
@@ -27,6 +36,7 @@ run_manager configure | grep -q '^LabSteward configuration$'
 run_manager update --help | grep -q '{check,apply}'
 run_manager validate | grep -q '^PASS:'
 run_manager status | grep -q '^LabSteward core: healthy$'
+run_manager action run core.status | grep -q '"status": "healthy"'
 mv "$fixture/opt/lib/labsteward_sanitize.py" "$fixture/opt/lib/labsteward_sanitize.py.missing"
 if run_manager validate 2>"$fixture/sanitizer-error"; then
   echo "Validation must reject a missing output sanitizer." >&2
@@ -87,4 +97,19 @@ if run_manager server add pve1 --plugin proxmox --endpoint 'https://pve1.example
   exit 1
 fi
 grep -q 'installed and enabled first' "$fixture/error"
+run_manager transport tls create --host 127.0.0.1 | grep -q '^Created a private LabSteward CA'
+[[ -s "$fixture/etc/secrets/tls/labsteward-ca.crt" ]]
+[[ "$(stat -c '%a' "$fixture/etc/secrets/tls/labsteward-ca.key")" == "600" ]]
+[[ "$(stat -c '%a' "$fixture/etc/secrets/tls/server.key")" == "640" ]]
+if run_manager transport tls create --host 127.0.0.1 2>"$fixture/tls-overwrite-error"; then
+  echo "TLS creation must not overwrite existing material by default." >&2
+  exit 1
+fi
+grep -q 'replacement requires --force --yes' "$fixture/tls-overwrite-error"
+run_manager transport configure --bind 127.0.0.1 | grep -q '^Configured TLS-only MCP transport'
+run_manager transport status | grep -q '^  Service: inactive$'
+run_manager validate | grep -q '^PASS:'
+run_manager transport enable | grep -q '^Enabled and started'
+run_manager transport status | grep -q '^  Service: active$'
+run_manager transport disable | grep -q '^Disabled and stopped'
 echo "Manager behavior checks passed."

@@ -10,7 +10,7 @@ network_check
 update_os
 
 msg_info "Installing LabSteward core dependencies"
-$STD apt-get install -y ca-certificates curl jq python3
+$STD apt-get install -y ca-certificates curl jq openssl python3
 msg_ok "Installed LabSteward core dependencies"
 
 msg_info "Creating the LabSteward security boundary"
@@ -36,8 +36,11 @@ chmod 0640 /etc/labsteward/config.json
 # LABSTEWARD_INSTALL_MANAGER
 # LABSTEWARD_INSTALL_SELF_UPDATE
 # LABSTEWARD_INSTALL_SANITIZER
+# LABSTEWARD_INSTALL_CORE
+# LABSTEWARD_INSTALL_MCP
 # LABSTEWARD_INSTALL_CATALOG
 # LABSTEWARD_INSTALL_SCHEMA
+# LABSTEWARD_INSTALL_SERVICE
 
 if [[ -n "${LABSTEWARD_VERSION_URL:-}" ]]; then
   curl -fsSL --retry 3 --retry-all-errors "$LABSTEWARD_VERSION_URL" -o /opt/labsteward/VERSION
@@ -48,6 +51,7 @@ printf '%s\n' "${LABSTEWARD_UPDATE_BASE_URL:-https://github.com/donselkirk/LabSt
 chown -R root:root /opt/labsteward
 find /opt/labsteward -type d -exec chmod 0755 {} +
 find /opt/labsteward -type f -exec chmod go-w {} +
+systemctl daemon-reload
 /usr/local/bin/stewctl status
 msg_ok "Created the LabSteward security boundary"
 

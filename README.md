@@ -5,9 +5,11 @@ home-lab management integrations. The appliance is administered with one
 `stewctl` command. Plugins, managed servers, credentials, and permission grants
 are deliberately separate.
 
-This repository is an early core-appliance scaffold. Proxmox, UniFi, and
-Synology appear in the catalog as planned plugins; their runtime adapters and
-credential workflows are intentionally not included yet.
+The core appliance includes a TLS-only Streamable HTTP MCP endpoint and one
+built-in, read-only `core_status` tool. This proves that a local AI client can
+authenticate to the gateway before any infrastructure plugin is installed.
+Proxmox, UniFi, and Synology remain planned catalog entries; their runtime
+adapters and credential workflows are intentionally not included yet.
 
 ## Intended install
 
@@ -35,6 +37,11 @@ stewctl client permission set automation1 pve1 audit.node audit.lxc
 stewctl client source set automation1 192.0.2.40/32
 stewctl client rotate-token automation1
 stewctl client revoke automation1 --yes
+stewctl action run core.status
+stewctl transport tls create --host 192.0.2.211 --host labsteward.example
+stewctl transport configure --bind 192.0.2.211 --host labsteward.example
+stewctl transport enable
+stewctl transport test
 stewctl status
 stewctl validate
 stewctl update check
@@ -43,6 +50,47 @@ stewctl update apply
 
 `labsteward` is installed as a compatibility and discoverability alias for
 `stewctl`.
+
+## Plugin-free MCP validation
+
+Remote access is opt-in. LabSteward creates no application listener until an
+administrator creates TLS material, configures a specific bind address, and
+enables the service. The following examples use documentation addresses; use
+real gateway and client addresses only inside the appliance and local client.
+
+```text
+stewctl transport tls create --host 192.0.2.211 --host labsteward.example
+stewctl transport configure --bind 192.0.2.211 --host labsteward.example
+stewctl client add desktop --source 192.0.2.40/32
+stewctl transport enable
+stewctl transport test
+```
+
+The client token is shown once. Store it in a protected client-side environment
+variable, never in this repository or directly in Codex configuration. Copy the
+displayed CA certificate through an authenticated channel, verify its printed
+SHA-256 fingerprint separately, and add it to the client's trusted CA store.
+
+Codex Desktop, CLI, and the IDE extension can then use their shared MCP
+configuration:
+
+```toml
+[mcp_servers.labsteward]
+url = "https://labsteward.example:9443/mcp"
+bearer_token_env_var = "LABSTEWARD_TOKEN"
+required = true
+default_tools_approval_mode = "prompt"
+enabled_tools = ["core_status"]
+```
+
+The client does not run another MCP server. LabSteward is the MCP server and the
+local AI application is its MCP client. An enabled registered client may call
+`core_status` without a server grant because the action only reports an
+allowlisted appliance summary and never contacts a managed server. Plugin tools
+will additionally require per-server grants.
+
+See [Remote access](wiki/Remote-Access.md) for prerequisites, validation,
+security behavior, and rollback.
 
 Plugin installation will only accept named entries from the checksummed release
 catalog. It will never accept an arbitrary URL. Credential entry will be added
@@ -79,9 +127,17 @@ updater; use reviewed manual upgrades until the repository becomes public.
   core then recursively redacts credential fields, authorization material,
   cookies, private keys, embedded URL credentials, and common inline tokens
   before a result can be logged or returned.
-- Transport is configured separately; the appliance creates no application
-  listener during initial bootstrap. `stewctl status` validates the core without
-  requiring any installed plugins or registered servers.
+- Transport is configured separately and binds only to one literal address.
+  The MCP endpoint requires TLS, a valid per-client bearer token, and a match
+  between the socket peer address and the client's source allowlist. Forwarded
+  address headers are never trusted.
+- The service rejects browser origins, unexpected Host values, oversized or
+  ambiguous requests, unknown tools, and arbitrary command-shaped inputs. It
+  rate-limits each socket source and writes controlled audit events without
+  tokens or action results.
+- The appliance creates no application listener during initial bootstrap.
+  `stewctl status` and local `stewctl action run core.status` require no plugins
+  or registered servers.
 
 ## Development
 

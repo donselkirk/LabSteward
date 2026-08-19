@@ -27,6 +27,16 @@ while IFS= read -r line || [[ -n "$line" ]]; do
       cat "${project_root}/src/labsteward_sanitize.py"
       printf "EOF_LABSTEWARD_SANITIZER\nchmod 0644 /opt/labsteward/lib/labsteward_sanitize.py\n"
       ;;
+    "# LABSTEWARD_INSTALL_CORE")
+      printf "cat >/opt/labsteward/lib/labsteward_core.py <<'EOF_LABSTEWARD_CORE'\n"
+      cat "${project_root}/src/labsteward_core.py"
+      printf "EOF_LABSTEWARD_CORE\nchmod 0644 /opt/labsteward/lib/labsteward_core.py\n"
+      ;;
+    "# LABSTEWARD_INSTALL_MCP")
+      printf "cat >/opt/labsteward/lib/labsteward_mcp.py <<'EOF_LABSTEWARD_MCP'\n"
+      cat "${project_root}/src/labsteward_mcp.py"
+      printf "EOF_LABSTEWARD_MCP\nchmod 0644 /opt/labsteward/lib/labsteward_mcp.py\n"
+      ;;
     "# LABSTEWARD_INSTALL_CATALOG")
       printf "cat >/opt/labsteward/catalog/plugins.json <<'EOF_LABSTEWARD_CATALOG'\n"
       cat "${project_root}/catalog/plugins.json"
@@ -36,6 +46,11 @@ while IFS= read -r line || [[ -n "$line" ]]; do
       printf "cat >/opt/labsteward/schemas/config.schema.json <<'EOF_LABSTEWARD_SCHEMA'\n"
       cat "${project_root}/schemas/config.schema.json"
       printf "EOF_LABSTEWARD_SCHEMA\n"
+      ;;
+    "# LABSTEWARD_INSTALL_SERVICE")
+      printf "cat >/etc/systemd/system/labsteward.service <<'EOF_LABSTEWARD_SERVICE'\n"
+      cat "${project_root}/src/labsteward.service"
+      printf "EOF_LABSTEWARD_SERVICE\nchmod 0644 /etc/systemd/system/labsteward.service\n"
       ;;
     *) printf '%s\n' "$line" ;;
   esac

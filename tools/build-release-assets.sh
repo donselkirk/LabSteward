@@ -23,6 +23,9 @@ install -m 0755 "${project_root}/install/labsteward-install.sh" "${output}/labst
 install -m 0755 "${project_root}/src/labsteward-manager.py" "${output}/stewctl"
 install -m 0755 "${project_root}/src/self-update.sh" "${output}/self-update.sh"
 install -m 0644 "${project_root}/src/labsteward_sanitize.py" "${output}/labsteward-sanitize.py"
+install -m 0644 "${project_root}/src/labsteward_core.py" "${output}/labsteward-core.py"
+install -m 0644 "${project_root}/src/labsteward_mcp.py" "${output}/labsteward-mcp.py"
+install -m 0644 "${project_root}/src/labsteward.service" "${output}/labsteward.service"
 install -m 0644 "${project_root}/catalog/plugins.json" "${output}/plugins.json"
 install -m 0644 "${project_root}/schemas/config.schema.json" "${output}/config.schema.json"
 install -m 0644 "${project_root}/release/COMPATIBILITY" "${output}/COMPATIBILITY"
@@ -32,7 +35,8 @@ done
 (
   cd "$output"
   sha256sum VERSION COMPATIBILITY api.func build.func config.schema.json core.func \
-    error_handler.func labsteward-ct.sh labsteward-install.sh labsteward-sanitize.py labsteward.sh \
+    error_handler.func labsteward-core.py labsteward-ct.sh labsteward-install.sh \
+    labsteward-mcp.py labsteward-sanitize.py labsteward.service labsteward.sh \
     install.func plugins.json self-update.sh stewctl tools.func >SHA256SUMS
   sha256sum -c SHA256SUMS >/dev/null
 )
