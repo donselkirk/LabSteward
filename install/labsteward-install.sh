@@ -55,6 +55,9 @@ CONFIG_FILE = Path(os.environ.get("LABSTEWARD_CONFIG_FILE", "/etc/labsteward/con
 CATALOG_FILE = Path(os.environ.get("LABSTEWARD_CATALOG_FILE", str(BASE_DIR / "catalog/plugins.json")))
 VERSION_FILE = Path(os.environ.get("LABSTEWARD_VERSION_FILE", str(BASE_DIR / "VERSION")))
 SELF_UPDATE = Path(os.environ.get("LABSTEWARD_SELF_UPDATE", str(BASE_DIR / "lib/self-update.sh")))
+SANITIZER_FILE = Path(
+    os.environ.get("LABSTEWARD_SANITIZER_FILE", str(BASE_DIR / "lib/labsteward_sanitize.py"))
+)
 ALLOW_NON_ROOT = os.environ.get("LABSTEWARD_ALLOW_NON_ROOT") == "1"
 
 IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
@@ -244,6 +247,11 @@ def command_validate(_: argparse.Namespace) -> None:
     config = load_config()
     catalog = catalog_plugins()
     errors = []
+    try:
+        source = SANITIZER_FILE.read_text(encoding="utf-8")
+        compile(source, str(SANITIZER_FILE), "exec")
+    except (OSError, SyntaxError) as exc:
+        errors.append(f"output sanitizer is missing or invalid: {exc}")
     for plugin_id, installed in config["plugins"].items():
         if plugin_id not in catalog:
             errors.append(f"installed plugin is absent from catalog: {plugin_id}")
@@ -340,6 +348,7 @@ set -Eeuo pipefail
 readonly BASE_DIR="${LABSTEWARD_BASE_DIR:-/opt/labsteward}"
 readonly MANAGER_PATH="${LABSTEWARD_MANAGER_PATH:-/usr/local/bin/stewctl}"
 readonly MANAGER_ALIAS_PATH="${LABSTEWARD_MANAGER_ALIAS_PATH:-/usr/local/bin/labsteward}"
+readonly SANITIZER_PATH="${LABSTEWARD_SANITIZER_PATH:-${BASE_DIR}/lib/labsteward_sanitize.py}"
 readonly VERSION_FILE="${LABSTEWARD_VERSION_FILE:-${BASE_DIR}/VERSION}"
 readonly UPDATE_URL_FILE="${BASE_DIR}/update.url"
 readonly DEFAULT_UPDATE_URL="https://github.com/donselkirk/LabSteward/releases/latest/download"
@@ -371,12 +380,12 @@ if [[ "$update_url" == "$DEFAULT_UPDATE_URL" ]]; then
   asset_url="https://github.com/donselkirk/LabSteward/releases/download/${release_version}"
 fi
 
-for asset in SHA256SUMS stewctl self-update.sh plugins.json config.schema.json; do
+for asset in SHA256SUMS stewctl self-update.sh labsteward-sanitize.py plugins.json config.schema.json; do
   curl -fsSL --retry 3 --retry-all-errors "${asset_url}/${asset}" -o "${stage}/${asset}"
 done
 (
   cd "$stage"
-  for asset in VERSION stewctl self-update.sh plugins.json config.schema.json; do
+  for asset in VERSION stewctl self-update.sh labsteward-sanitize.py plugins.json config.schema.json; do
     grep -q " ${asset}$" SHA256SUMS || exit 1
   done
   sha256sum -c --ignore-missing SHA256SUMS >/dev/null
@@ -404,6 +413,7 @@ rollback() {
   echo "Update validation failed; restoring the previous LabSteward core." >&2
   [[ ! -e "${backup}/manager" ]] || cp -a "${backup}/manager" "$MANAGER_PATH"
   [[ ! -e "${backup}/self-update.sh" ]] || cp -a "${backup}/self-update.sh" "${BASE_DIR}/lib/self-update.sh"
+  [[ ! -e "${backup}/labsteward_sanitize.py" ]] || cp -a "${backup}/labsteward_sanitize.py" "$SANITIZER_PATH"
   [[ ! -e "${backup}/plugins.json" ]] || cp -a "${backup}/plugins.json" "${BASE_DIR}/catalog/plugins.json"
   [[ ! -e "${backup}/config.schema.json" ]] || cp -a "${backup}/config.schema.json" "${BASE_DIR}/schemas/config.schema.json"
   [[ ! -e "${backup}/VERSION" ]] || cp -a "${backup}/VERSION" "$VERSION_FILE"
@@ -414,6 +424,7 @@ rollback() {
 install -d -m 0755 "$backup" "${BASE_DIR}/lib" "${BASE_DIR}/catalog" "${BASE_DIR}/schemas"
 [[ ! -e "$MANAGER_PATH" ]] || cp -a "$MANAGER_PATH" "${backup}/manager"
 [[ ! -e "${BASE_DIR}/lib/self-update.sh" ]] || cp -a "${BASE_DIR}/lib/self-update.sh" "${backup}/self-update.sh"
+[[ ! -e "$SANITIZER_PATH" ]] || cp -a "$SANITIZER_PATH" "${backup}/labsteward_sanitize.py"
 [[ ! -e "${BASE_DIR}/catalog/plugins.json" ]] || cp -a "${BASE_DIR}/catalog/plugins.json" "${backup}/plugins.json"
 [[ ! -e "${BASE_DIR}/schemas/config.schema.json" ]] || cp -a "${BASE_DIR}/schemas/config.schema.json" "${backup}/config.schema.json"
 [[ ! -e "$VERSION_FILE" ]] || cp -a "$VERSION_FILE" "${backup}/VERSION"
@@ -422,6 +433,7 @@ trap rollback ERR
 install -m 0755 "${stage}/stewctl" "$MANAGER_PATH"
 ln -sfn "$MANAGER_PATH" "$MANAGER_ALIAS_PATH"
 install -m 0755 "${stage}/self-update.sh" "${BASE_DIR}/lib/self-update.sh"
+install -m 0644 "${stage}/labsteward-sanitize.py" "$SANITIZER_PATH"
 install -m 0644 "${stage}/plugins.json" "${BASE_DIR}/catalog/plugins.json"
 install -m 0644 "${stage}/config.schema.json" "${BASE_DIR}/schemas/config.schema.json"
 install -m 0644 "${stage}/VERSION" "$VERSION_FILE"
@@ -433,6 +445,142 @@ rm -rf "$backup"
 echo "Updated LabSteward core to ${release_version}."
 EOF_LABSTEWARD_UPDATE
 chmod 0755 /opt/labsteward/lib/self-update.sh
+cat >/opt/labsteward/lib/labsteward_sanitize.py <<'EOF_LABSTEWARD_SANITIZER'
+#!/usr/bin/env python3
+"""Fail-safe output sanitization for LabSteward plugin results.
+
+Plugins must first construct results from an explicit output schema. This module
+is the mandatory defense-in-depth pass applied before results are logged or
+returned to a caller.
+"""
+
+from __future__ import annotations
+
+import math
+import re
+from typing import Any
+
+REDACTED = "[REDACTED]"
+TRUNCATED = "[TRUNCATED]"
+MAX_DEPTH = 12
+MAX_ITEMS = 256
+MAX_STRING_LENGTH = 8192
+
+_SENSITIVE_KEY_PARTS = (
+    "password",
+    "passwd",
+    "passphrase",
+    "secret",
+    "token",
+    "apikey",
+    "credential",
+    "privatekey",
+    "cookie",
+    "sessionid",
+    "csrf",
+    "ticket",
+)
+_SENSITIVE_KEYS = {"auth", "authorization", "pwd", "sid"}
+_BEARER_OR_BASIC = re.compile(
+    r"(?i)\b(bearer|basic)\s+[a-z0-9._~+/=-]+"
+)
+_URL_USERINFO = re.compile(r"(?i)\b(https?://)[^\s/@]+@")
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b([a-z0-9_-]*(?:password|passwd|passphrase|secret|token|apikey|api_key|"
+    r"credential|privatekey|cookie|sessionid|csrf|ticket)[a-z0-9_-]*|authorization|"
+    r'''pwd|sid)(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s&,;]+)'''
+)
+_JWT = re.compile(r"\beyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\b")
+
+
+def _normalized_key(key: object) -> str:
+    if not isinstance(key, str):
+        return ""
+    return re.sub(r"[^a-z0-9]", "", key.lower())
+
+
+def is_sensitive_key(key: object) -> bool:
+    """Return whether a result field name implies authentication material."""
+
+    normalized = _normalized_key(key)
+    return normalized in _SENSITIVE_KEYS or any(
+        part in normalized for part in _SENSITIVE_KEY_PARTS
+    )
+
+
+def sanitize_text(value: str, *, max_length: int = MAX_STRING_LENGTH) -> str:
+    """Redact common inline secret forms and cap output size."""
+
+    if "PRIVATE KEY-----" in value.upper():
+        return REDACTED
+    value = _URL_USERINFO.sub(r"\1[REDACTED]@", value)
+    value = _BEARER_OR_BASIC.sub(lambda match: f"{match.group(1)} {REDACTED}", value)
+    value = _SECRET_ASSIGNMENT.sub(lambda match: f"{match.group(1)}{match.group(2)}{REDACTED}", value)
+    value = _JWT.sub(REDACTED, value)
+    if len(value) > max_length:
+        value = f"{value[:max_length]}{TRUNCATED}"
+    return value
+
+
+def sanitize_result(
+    value: Any,
+    *,
+    max_depth: int = MAX_DEPTH,
+    max_items: int = MAX_ITEMS,
+    max_string_length: int = MAX_STRING_LENGTH,
+) -> Any:
+    """Return a JSON-safe, recursively redacted copy of a plugin result."""
+
+    seen: set[int] = set()
+
+    def walk(item: Any, depth: int) -> Any:
+        if depth > max_depth:
+            return TRUNCATED
+        if item is None or isinstance(item, (bool, int)):
+            return item
+        if isinstance(item, float):
+            return item if math.isfinite(item) else "[UNSUPPORTED NUMBER]"
+        if isinstance(item, str):
+            return sanitize_text(item, max_length=max_string_length)
+        if isinstance(item, bytes):
+            return "[BINARY OMITTED]"
+
+        identity = id(item)
+        if isinstance(item, dict):
+            if identity in seen:
+                return TRUNCATED
+            seen.add(identity)
+            result: dict[str, Any] = {}
+            entries = list(item.items())
+            for key, child in entries[:max_items]:
+                if not isinstance(key, str):
+                    result["[UNSUPPORTED KEY]"] = REDACTED
+                    continue
+                output_key = sanitize_text(key, max_length=256)
+                result[output_key] = REDACTED if is_sensitive_key(key) else walk(child, depth + 1)
+            if len(entries) > max_items:
+                result["_labsteward_truncated"] = len(entries) - max_items
+            seen.remove(identity)
+            return result
+
+        if isinstance(item, (list, tuple)):
+            if identity in seen:
+                return TRUNCATED
+            seen.add(identity)
+            entries = list(item)
+            result = [walk(child, depth + 1) for child in entries[:max_items]]
+            if len(entries) > max_items:
+                result.append(TRUNCATED)
+            seen.remove(identity)
+            return result
+
+        return f"[UNSUPPORTED TYPE: {type(item).__name__}]"
+
+    if max_depth < 0 or max_items < 1 or max_string_length < 1:
+        raise ValueError("Sanitizer limits must be positive")
+    return walk(value, 0)
+EOF_LABSTEWARD_SANITIZER
+chmod 0644 /opt/labsteward/lib/labsteward_sanitize.py
 cat >/opt/labsteward/catalog/plugins.json <<'EOF_LABSTEWARD_CATALOG'
 {
   "schema": 1,

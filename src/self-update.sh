@@ -4,6 +4,7 @@ set -Eeuo pipefail
 readonly BASE_DIR="${LABSTEWARD_BASE_DIR:-/opt/labsteward}"
 readonly MANAGER_PATH="${LABSTEWARD_MANAGER_PATH:-/usr/local/bin/stewctl}"
 readonly MANAGER_ALIAS_PATH="${LABSTEWARD_MANAGER_ALIAS_PATH:-/usr/local/bin/labsteward}"
+readonly SANITIZER_PATH="${LABSTEWARD_SANITIZER_PATH:-${BASE_DIR}/lib/labsteward_sanitize.py}"
 readonly VERSION_FILE="${LABSTEWARD_VERSION_FILE:-${BASE_DIR}/VERSION}"
 readonly UPDATE_URL_FILE="${BASE_DIR}/update.url"
 readonly DEFAULT_UPDATE_URL="https://github.com/donselkirk/LabSteward/releases/latest/download"
@@ -35,12 +36,12 @@ if [[ "$update_url" == "$DEFAULT_UPDATE_URL" ]]; then
   asset_url="https://github.com/donselkirk/LabSteward/releases/download/${release_version}"
 fi
 
-for asset in SHA256SUMS stewctl self-update.sh plugins.json config.schema.json; do
+for asset in SHA256SUMS stewctl self-update.sh labsteward-sanitize.py plugins.json config.schema.json; do
   curl -fsSL --retry 3 --retry-all-errors "${asset_url}/${asset}" -o "${stage}/${asset}"
 done
 (
   cd "$stage"
-  for asset in VERSION stewctl self-update.sh plugins.json config.schema.json; do
+  for asset in VERSION stewctl self-update.sh labsteward-sanitize.py plugins.json config.schema.json; do
     grep -q " ${asset}$" SHA256SUMS || exit 1
   done
   sha256sum -c --ignore-missing SHA256SUMS >/dev/null
@@ -68,6 +69,7 @@ rollback() {
   echo "Update validation failed; restoring the previous LabSteward core." >&2
   [[ ! -e "${backup}/manager" ]] || cp -a "${backup}/manager" "$MANAGER_PATH"
   [[ ! -e "${backup}/self-update.sh" ]] || cp -a "${backup}/self-update.sh" "${BASE_DIR}/lib/self-update.sh"
+  [[ ! -e "${backup}/labsteward_sanitize.py" ]] || cp -a "${backup}/labsteward_sanitize.py" "$SANITIZER_PATH"
   [[ ! -e "${backup}/plugins.json" ]] || cp -a "${backup}/plugins.json" "${BASE_DIR}/catalog/plugins.json"
   [[ ! -e "${backup}/config.schema.json" ]] || cp -a "${backup}/config.schema.json" "${BASE_DIR}/schemas/config.schema.json"
   [[ ! -e "${backup}/VERSION" ]] || cp -a "${backup}/VERSION" "$VERSION_FILE"
@@ -78,6 +80,7 @@ rollback() {
 install -d -m 0755 "$backup" "${BASE_DIR}/lib" "${BASE_DIR}/catalog" "${BASE_DIR}/schemas"
 [[ ! -e "$MANAGER_PATH" ]] || cp -a "$MANAGER_PATH" "${backup}/manager"
 [[ ! -e "${BASE_DIR}/lib/self-update.sh" ]] || cp -a "${BASE_DIR}/lib/self-update.sh" "${backup}/self-update.sh"
+[[ ! -e "$SANITIZER_PATH" ]] || cp -a "$SANITIZER_PATH" "${backup}/labsteward_sanitize.py"
 [[ ! -e "${BASE_DIR}/catalog/plugins.json" ]] || cp -a "${BASE_DIR}/catalog/plugins.json" "${backup}/plugins.json"
 [[ ! -e "${BASE_DIR}/schemas/config.schema.json" ]] || cp -a "${BASE_DIR}/schemas/config.schema.json" "${backup}/config.schema.json"
 [[ ! -e "$VERSION_FILE" ]] || cp -a "$VERSION_FILE" "${backup}/VERSION"
@@ -86,6 +89,7 @@ trap rollback ERR
 install -m 0755 "${stage}/stewctl" "$MANAGER_PATH"
 ln -sfn "$MANAGER_PATH" "$MANAGER_ALIAS_PATH"
 install -m 0755 "${stage}/self-update.sh" "${BASE_DIR}/lib/self-update.sh"
+install -m 0644 "${stage}/labsteward-sanitize.py" "$SANITIZER_PATH"
 install -m 0644 "${stage}/plugins.json" "${BASE_DIR}/catalog/plugins.json"
 install -m 0644 "${stage}/config.schema.json" "${BASE_DIR}/schemas/config.schema.json"
 install -m 0644 "${stage}/VERSION" "$VERSION_FILE"

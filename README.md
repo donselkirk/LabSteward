@@ -54,6 +54,10 @@ from command-line arguments.
 - A server registration names one plugin and an explicit permission set.
 - No plugin may expose arbitrary shell execution, arbitrary requests, or raw
   secret/configuration reads.
+- Plugins must construct responses from explicit output-field allowlists. The
+  core then recursively redacts credential fields, authorization material,
+  cookies, private keys, embedded URL credentials, and common inline tokens
+  before a result can be logged or returned.
 - Transport is configured separately; the appliance creates no application
   listener during initial bootstrap.
 

@@ -33,6 +33,7 @@ jobs:
           git diff --exit-code
           bash tests/static-checks.sh
           bash tests/manager-behavior.sh
+          python3 tests/sanitizer-behavior.py
           bash tests/self-update-behavior.sh
           shellcheck labsteward.sh ct/labsteward.sh src/self-update.sh tools/*.sh tests/*.sh
           git diff --check

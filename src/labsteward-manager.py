@@ -21,6 +21,9 @@ CONFIG_FILE = Path(os.environ.get("LABSTEWARD_CONFIG_FILE", "/etc/labsteward/con
 CATALOG_FILE = Path(os.environ.get("LABSTEWARD_CATALOG_FILE", str(BASE_DIR / "catalog/plugins.json")))
 VERSION_FILE = Path(os.environ.get("LABSTEWARD_VERSION_FILE", str(BASE_DIR / "VERSION")))
 SELF_UPDATE = Path(os.environ.get("LABSTEWARD_SELF_UPDATE", str(BASE_DIR / "lib/self-update.sh")))
+SANITIZER_FILE = Path(
+    os.environ.get("LABSTEWARD_SANITIZER_FILE", str(BASE_DIR / "lib/labsteward_sanitize.py"))
+)
 ALLOW_NON_ROOT = os.environ.get("LABSTEWARD_ALLOW_NON_ROOT") == "1"
 
 IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
@@ -210,6 +213,11 @@ def command_validate(_: argparse.Namespace) -> None:
     config = load_config()
     catalog = catalog_plugins()
     errors = []
+    try:
+        source = SANITIZER_FILE.read_text(encoding="utf-8")
+        compile(source, str(SANITIZER_FILE), "exec")
+    except (OSError, SyntaxError) as exc:
+        errors.append(f"output sanitizer is missing or invalid: {exc}")
     for plugin_id, installed in config["plugins"].items():
         if plugin_id not in catalog:
             errors.append(f"installed plugin is absent from catalog: {plugin_id}")
