@@ -259,6 +259,13 @@ def main() -> int:
                 and metadata.get("scopes_supported") == ["mcp:connect"],
                 "authorization metadata must advertise the supported public-client profile",
             )
+            status, headers, body = request(admin_port, context, "GET", "/favicon.png")
+            require(
+                status == 200
+                and headers.get("content-type") == "image/png"
+                and body.startswith(b"\x89PNG\r\n\x1a\n"),
+                "the embedded LabSteward favicon must be served as a PNG",
+            )
             status, _headers, body = request(
                 admin_port, context, "POST", "/oauth/register",
                 body=json.dumps({"client_name": "Codex Desktop", "redirect_uris": ["https://evil.example/callback"]}).encode(),
@@ -287,7 +294,13 @@ def main() -> int:
                 }
             )
             status, _headers, body = request(admin_port, context, "GET", f"/authorize?{query}")
-            require(status == 200 and b"Administrator sign in" in body, "authorization must require admin sign-in")
+            require(
+                status == 200
+                and b"Administrator sign in" in body
+                and b"rel=icon" in body
+                and b"class=login-brand" in body,
+                "authorization must require the branded admin sign-in",
+            )
             transaction = re.search(rb'name=transaction value=\'([^\']+)\'', body)
             require(transaction is not None, "authorization transaction missing")
             transaction_value = transaction.group(1).decode()
@@ -365,6 +378,7 @@ def main() -> int:
                 admin_port, context, "GET", "/admin", headers={"Cookie": cookie},
             )
             require(status == 200 and b"Codex Desktop" in body, "dashboard must list the approved client")
+            require(b"class=brand" in body and b"src=/favicon.png" in body, "dashboard header must show the logo")
             require(b"No servers have been added" in body, "new clients must not list every registered server")
             require(b"Add server" in body and b"pve-test" in body, "client card must offer explicit server assignment")
             require(b"<h2>Servers" not in body and b"<h2>Plugins" not in body, "main page must focus on clients")

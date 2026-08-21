@@ -25,6 +25,8 @@
   and described Off/Read/Write permissions in collapsed rows, and remove servers
   independently. Server removal cascades through all clients, while client
   revocation removes the visible record without allowing old refresh-token reuse.
+- Add a compact LabSteward shield-and-network mark to the administration header,
+  sign-in page, and browser favicon.
 
 - Add a shared, allowlisted action dispatcher with plugin-free `core.status`
   local execution and the remote `core_status` MCP tool.

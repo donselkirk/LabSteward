@@ -2747,6 +2747,84 @@ SESSION_IDLE_SECONDS = 15 * 60
 MAX_STATE_ITEMS = 2048
 IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 TOKEN_VALUE = re.compile(r"^ls[acr]_[A-Za-z0-9_-]{43}$")
+BRAND_MARK_PNG = base64.b64decode(
+(
+    "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"
+)
+)
 
 
 class AdminError(Exception):
@@ -3022,7 +3100,7 @@ class AdminServer(ThreadingHTTPServer):
 STYLE = """
 :root{color-scheme:dark;--bg:#0b1220;--panel:#131d2f;--line:#2a3850;--text:#e9eef7;--muted:#9aabc1;--accent:#6ee7b7;--danger:#fb7185}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px system-ui,sans-serif}main{max-width:1100px;margin:0 auto;padding:32px 20px}h1,h2{margin:.2em 0 .7em}h3,h4{margin:.4em 0 .7em}p{line-height:1.5}.muted{color:var(--muted)}
-nav,.client-head,.row-actions,.page-tabs{display:flex;justify-content:space-between;align-items:center;gap:10px}nav{margin-bottom:14px}.page-tabs{justify-content:flex-start;margin-bottom:24px;border-bottom:1px solid var(--line)}.page-tabs a{padding:10px 14px;text-decoration:none;color:var(--muted);border-bottom:2px solid transparent}.page-tabs a.active{color:var(--text);border-color:var(--accent)}
+nav,.client-head,.row-actions,.page-tabs,.brand,.login-brand{display:flex;justify-content:space-between;align-items:center;gap:10px}nav{margin-bottom:14px}.brand,.login-brand{justify-content:flex-start}.brand img{width:42px;height:42px}.brand h1,.login-brand h1{margin:0}.login-brand img{width:52px;height:52px}.page-tabs{justify-content:flex-start;margin-bottom:24px;border-bottom:1px solid var(--line)}.page-tabs a{padding:10px 14px;text-decoration:none;color:var(--muted);border-bottom:2px solid transparent}.page-tabs a.active{color:var(--text);border-color:var(--accent)}
 .card,section,.client-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin:14px 0}.client-card{background:#101a2b}.client-settings{display:grid;grid-template-columns:minmax(250px,1fr) auto;gap:14px;align-items:end}.row-actions{justify-content:flex-end;white-space:nowrap}
 .server-access{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#0d1728}.access-row+.access-row{border-top:1px solid var(--line)}.access-row summary{display:grid;grid-template-columns:minmax(180px,1fr) auto auto;gap:14px;align-items:start;padding:13px 14px;cursor:pointer;list-style:none}.access-row summary::-webkit-details-marker{display:none}.collapse-icon{display:inline-block;width:9px;height:9px;border-right:2px solid var(--accent);border-bottom:2px solid var(--accent);transform:rotate(45deg);transition:transform .15s ease;margin:2px 4px 0}.access-row[open] .collapse-icon{transform:rotate(225deg);margin-top:7px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.access-body{border-top:1px solid var(--line);padding:14px}.permission-list{display:grid;gap:0;margin-bottom:14px}.permission-control{display:grid;grid-template-columns:minmax(220px,1fr) auto;align-items:start;gap:16px;padding:10px 0}.permission-control+.permission-control{border-top:1px solid var(--line)}.permission-name{font-weight:600}.permission-description{display:block;color:var(--muted);font-size:13px;margin-top:3px}.help{display:inline-grid;place-items:center;width:17px;height:17px;border:1px solid var(--line);border-radius:50%;font-size:11px;color:var(--muted);cursor:help;margin-left:5px}.level-toggle{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}.level-choice{display:inline-flex;align-items:center;margin:0;padding:7px 11px;background:#111d31;cursor:pointer}.level-choice+.level-choice{border-left:1px solid var(--line)}.level-choice:has(input:checked){background:#1d6f58;color:#fff}.level-choice input{position:absolute;opacity:0;pointer-events:none}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid var(--line);padding:10px 8px;vertical-align:top}input,select,button,.button-link{font:inherit;border-radius:7px;border:1px solid var(--line);padding:8px 10px;background:#0d1728;color:var(--text)}button{cursor:pointer;background:#1d6f58;border-color:#2ca47e}button.secondary{background:#18243a;border-color:var(--line)}button.danger{background:#7f1d32;border-color:#be3453}button:disabled{cursor:not-allowed;opacity:.55}.button-link{display:inline-block;text-decoration:none;background:#18243a}form.inline{display:inline-flex;gap:8px;flex-wrap:wrap}.notice{border-left:4px solid var(--accent);padding:10px 14px;background:#10251f}.error{border-left-color:var(--danger);background:#2b1118}.pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:3px 8px;margin:2px}.login{max-width:430px;margin:10vh auto}label{display:block;margin:12px 0 5px}a{color:var(--accent)}
@@ -3062,7 +3140,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+            "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
         )
 
     def send_bytes(self, status: int, body: bytes, content_type: str) -> None:
@@ -3086,6 +3164,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "<!doctype html><html lang=en><head><meta charset=utf-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             f"<title>{html.escape(title)} · LabSteward</title>"
+            "<link rel=icon type=image/png href=/favicon.png>"
             "<link rel=stylesheet href=/admin/style.css></head><body><main>"
             f"{content}</main></body></html>"
         )
@@ -3200,6 +3279,8 @@ class AdminHandler(BaseHTTPRequestHandler):
         try:
             if path == "/.well-known/oauth-authorization-server":
                 self.oauth_metadata()
+            elif path == "/favicon.png":
+                self.send_bytes(200, BRAND_MARK_PNG, "image/png")
             elif path == "/admin/style.css":
                 self.send_bytes(200, STYLE.encode("utf-8"), "text/css; charset=utf-8")
             elif path == "/admin/login":
@@ -3296,7 +3377,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         self.send_html(
             200,
             "Administrator sign in",
-            "<section class=login><h1>LabSteward</h1><p class=muted>Administrator sign in</p>"
+            "<section class=login><div class=login-brand><img src=/favicon.png alt=''><h1>LabSteward</h1></div><p class=muted>Administrator sign in</p>"
             f"{error_html}<form method=post action=/admin/login>{transaction_field}"
             "<label for=username>Username</label><input id=username name=username required autocomplete=username>"
             "<label for=password>Password</label><input id=password name=password type=password required autocomplete=current-password>"
@@ -3405,7 +3486,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             return "".join(controls) or "<span class=muted>No permissions are declared by this plugin.</span>"
 
         navigation = (
-            "<nav><div><h1>LabSteward</h1><span class=muted>Administration</span></div>"
+            "<nav><div class=brand><img src=/favicon.png alt=''><div><h1>LabSteward</h1><span class=muted>Administration</span></div></div>"
             "<form method=post action=/admin/logout>"
             f"<input type=hidden name=csrf value='{csrf}'><button type=submit>Sign out</button></form></nav>"
             "<div class=page-tabs>"
