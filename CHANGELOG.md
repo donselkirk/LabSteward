@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Normalize administrator browser-origin comparisons by scheme, hostname, and
+  effective HTTPS port so valid Chrome submissions are not rejected by literal
+  formatting differences; Host allowlisting and CSRF validation remain required.
 - Add standards-based OAuth browser enrollment for MCP clients using dynamic
   client registration, authorization code with PKCE S256, protected-resource
   discovery, short-lived access tokens, rotating refresh tokens, and immediate

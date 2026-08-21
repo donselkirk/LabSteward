@@ -505,7 +505,24 @@ class AdminHandler(BaseHTTPRequestHandler):
         return value
 
     def origin_allowed(self) -> bool:
-        return self.headers.get("Origin") == self.server.issuer  # type: ignore[attr-defined]
+        origin = self.headers.get("Origin", "").strip().rstrip("/")
+        issuer = str(self.server.issuer).strip().rstrip("/")  # type: ignore[attr-defined]
+        if not origin or origin.lower() == "null":
+            return False
+        try:
+            parsed_origin = urlsplit(origin)
+            parsed_issuer = urlsplit(issuer)
+            origin_port = parsed_origin.port or (443 if parsed_origin.scheme == "https" else 80)
+            issuer_port = parsed_issuer.port or (443 if parsed_issuer.scheme == "https" else 80)
+        except ValueError:
+            return False
+        return (
+            parsed_origin.scheme.lower() == parsed_issuer.scheme.lower() == "https"
+            and parsed_origin.hostname is not None
+            and parsed_issuer.hostname is not None
+            and parsed_origin.hostname.lower().rstrip(".") == parsed_issuer.hostname.lower().rstrip(".")
+            and origin_port == issuer_port
+        )
 
     def session(self) -> tuple[str, dict[str, Any]] | None:
         raw = self.headers.get("Cookie")
