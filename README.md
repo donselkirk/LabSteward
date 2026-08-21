@@ -13,8 +13,8 @@ plugin is installed.
 The dashboard opens on client management, with separate Servers and Plugins pages.
 Each client explicitly adds only the servers it needs, then gives every plugin
 capability an Off, Read, or Write level.
-Proxmox, UniFi, and Synology remain planned catalog entries; their runtime
-adapters and credential workflows are intentionally not included yet.
+Synology is the first available plugin and exposes two read-only, sanitized
+summaries. Proxmox and UniFi remain planned catalog entries.
 
 ## Intended install
 
@@ -34,11 +34,12 @@ baseline has been validated with it; keyctl remains disabled.
 ```text
 stewctl configure
 stewctl plugin list
-stewctl plugin install proxmox
-stewctl server add pve1 --plugin proxmox --endpoint https://pve1.example.test:8006
+stewctl plugin install synology
+stewctl server add nas1 --plugin synology --endpoint https://nas.example.test:5001
+stewctl server credentials set nas1 --ca-file /path/to/dsm-ca.crt
 stewctl client add automation1 --source 192.0.2.40/32
-stewctl client server add automation1 pve1
-stewctl client permission set automation1 pve1 node.status=read lxc.power=write
+stewctl client server add automation1 nas1
+stewctl client permission set automation1 nas1 system.read=read storage.read=read
 stewctl client source set automation1 192.0.2.40/32
 stewctl client rotate-token automation1
 stewctl client revoke automation1 --yes
@@ -109,10 +110,34 @@ will additionally require per-server grants.
 See [Remote access](wiki/Remote-Access.md) for prerequisites, validation,
 security behavior, and rollback.
 
-Plugin installation will only accept named entries from the checksummed release
-catalog. It will never accept an arbitrary URL. Credential entry will be added
-with each plugin and will read secrets from a terminal or standard input, never
-from command-line arguments.
+Plugin installation accepts only named entries whose immutable package and
+manifest match the checksummed release catalog. It never accepts an arbitrary
+URL. Synology credentials are read without echo at the appliance terminal and
+stored under `/etc/labsteward/secrets/servers`; they are never accepted as
+command-line arguments or returned by the browser, CLI, MCP transport, or logs.
+
+## Synology read-only plugin
+
+Install the released plugin, register one HTTPS DSM origin, and store credentials
+for a dedicated least-privilege DSM account:
+
+```text
+stewctl plugin install synology
+stewctl server add nas1 --plugin synology --endpoint https://nas.example.test:5001
+stewctl server credentials set nas1 --ca-file /path/to/dsm-ca.crt
+```
+
+Omit `--ca-file` only when DSM presents a certificate already trusted by Debian.
+The plugin provides `system.read` for model, DSM version, health, uptime,
+temperature, CPU, and memory summaries, and `storage.read` for pool/volume health,
+capacity, and aggregate disk counts. These permissions map to the MCP tools
+`synology_system_summary` and `synology_storage_summary`. It does not expose
+shares, files, filenames, hostnames, serial numbers, raw DSM responses, arbitrary
+DSM API names, or write actions.
+
+The adapter uses DSM's API discovery and session authentication flow, then makes
+only its fixed system/utilization or storage read calls. DSM API login/logout is
+documented in Synology's [DSM Login Web API Guide](https://kb.synology.com/en-us/DG/DSM_Login_Web_API_Guide/2).
 
 OAuth access tokens live for ten minutes and refresh tokens rotate on every use.
 LabSteward persists only token hashes. Revocation removes active access tokens;
@@ -159,8 +184,9 @@ LABSTEWARD_UPDATE_BASE_URL=https://github.com/donselkirk/LabSteward/releases/lat
 - Administrator configuration and TLS keys are isolated under
   `/etc/labsteward-admin`; OAuth state is mode-0600 under
   `/var/lib/labsteward-admin`.
-- A server registration names one plugin and endpoint. Server access credentials
-  are configured separately through the plugin's write-only schema.
+- A server registration names one plugin and endpoint. Synology server access
+  credentials are configured separately at the appliance terminal; the browser
+  displays the command but never accepts or retrieves credential values.
 - Remote clients require both a source IP/CIDR match and a unique cryptographic
   identity. Servers must be explicitly assigned to each client, cannot be assigned
   twice, and expose only capabilities declared by their plugin. Each assigned

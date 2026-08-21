@@ -23,7 +23,7 @@ id labsteward-admin >/dev/null 2>&1 || useradd --system --gid labsteward-admin \
 install -d -o root -g root -m 0755 /opt/labsteward /opt/labsteward/lib /opt/labsteward/catalog /opt/labsteward/schemas /opt/labsteward/plugins
 install -d -o root -g labsteward -m 2750 /etc/labsteward
 install -d -o root -g labsteward-admin -m 2750 /etc/labsteward-admin
-install -d -o root -g labsteward -m 2750 /etc/labsteward/secrets /etc/labsteward/secrets/clients
+install -d -o root -g labsteward -m 2750 /etc/labsteward/secrets /etc/labsteward/secrets/clients /etc/labsteward/secrets/servers
 install -d -o labsteward -g labsteward -m 0700 /var/lib/labsteward
 install -d -o labsteward-admin -g labsteward-admin -m 0700 /var/lib/labsteward-admin
 
@@ -45,6 +45,7 @@ chmod 0640 /etc/labsteward/config.json
 # LABSTEWARD_INSTALL_MCP
 # LABSTEWARD_INSTALL_ADMIN
 # LABSTEWARD_INSTALL_BROKER
+# LABSTEWARD_INSTALL_SYNOLOGY_PLUGIN
 # LABSTEWARD_INSTALL_CATALOG
 # LABSTEWARD_INSTALL_SCHEMA
 # LABSTEWARD_INSTALL_SERVICE

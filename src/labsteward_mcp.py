@@ -482,7 +482,7 @@ class MCPHandler(BaseHTTPRequestHandler):
             self.send_empty(202)
             return
         try:
-            result = self.dispatch(method, request.get("params", {}))
+            result = self.dispatch(method, request.get("params", {}), client_id=client_id)
         except DispatchError as exc:
             audit(
                 "tool_rejected",
@@ -506,7 +506,7 @@ class MCPHandler(BaseHTTPRequestHandler):
         audit("request_succeeded", source=source, client=client_id, method=method)
         self.send_json(200, {"jsonrpc": "2.0", "id": request_id, "result": result})
 
-    def dispatch(self, method: str, params: object) -> dict[str, Any]:
+    def dispatch(self, method: str, params: object, *, client_id: str) -> dict[str, Any]:
         if method == "initialize":
             if not isinstance(params, dict):
                 raise DispatchError("invalid_arguments", "Invalid initialize parameters")
@@ -535,9 +535,10 @@ class MCPHandler(BaseHTTPRequestHandler):
                 raise DispatchError("invalid_arguments", "Invalid tool call")
             name = params.get("name")
             arguments = params.get("arguments", {})
-            if name != "core_status":
+            available_tools = {tool["name"] for tool in tool_definitions()}
+            if name not in available_tools:
                 raise DispatchError("unknown_action", "Unknown LabSteward tool")
-            result = dispatch_action("core.status", arguments)
+            result = dispatch_action(str(name), arguments, client_id=client_id)
             return {
                 "content": [
                     {

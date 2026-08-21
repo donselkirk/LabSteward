@@ -28,6 +28,7 @@ CATALOG_FILE = Path(
     os.environ.get("LABSTEWARD_CATALOG_FILE", "/opt/labsteward/catalog/plugins.json")
 )
 VERSION_FILE = Path(os.environ.get("LABSTEWARD_VERSION_FILE", "/opt/labsteward/VERSION"))
+PLUGINS_DIR = Path(os.environ.get("LABSTEWARD_PLUGINS_DIR", "/opt/labsteward/plugins"))
 TOKEN_SNAPSHOT = Path(
     os.environ.get("LABSTEWARD_OAUTH_TOKEN_FILE", "/etc/labsteward/secrets/oauth-tokens.json")
 )
@@ -137,6 +138,61 @@ def declared_permissions(plugin: dict[str, Any]) -> set[str]:
     raw = plugin.get("permissions", {})
     values = raw if isinstance(raw, list) else raw.keys() if isinstance(raw, dict) else []
     return {require_id(item, "permission", PERMISSION) for item in values}
+
+
+def verified_plugin(plugin_id: str) -> dict[str, Any]:
+    plugin = next(
+        (
+            item for item in load_catalog()["plugins"]
+            if isinstance(item, dict) and item.get("id") == plugin_id
+        ),
+        None,
+    )
+    if not isinstance(plugin, dict) or plugin.get("status") != "available":
+        raise BrokerError("Plugin is not available in the approved release catalog")
+    manifest = read_object(PLUGINS_DIR / plugin_id / "manifest.json")
+    entrypoint = PLUGINS_DIR / plugin_id / "plugin.py"
+    if (
+        manifest.get("schema") != 1
+        or manifest.get("id") != plugin_id
+        or manifest.get("version") != plugin.get("version")
+        or manifest.get("entrypoint") != "plugin.py"
+        or manifest.get("core_api") != 1
+    ):
+        raise BrokerError("Plugin package metadata does not match the approved release")
+    manifest_permissions = manifest.get("permissions")
+    actions = manifest.get("actions")
+    catalog_permissions = plugin.get("permissions", {})
+    descriptions = plugin.get("permission_descriptions", {})
+    if (
+        not isinstance(manifest_permissions, dict)
+        or not isinstance(actions, dict)
+        or not isinstance(catalog_permissions, dict)
+        or not isinstance(descriptions, dict)
+        or set(manifest_permissions) != set(catalog_permissions)
+    ):
+        raise BrokerError("Plugin package contract does not match the approved release")
+    for permission, record in manifest_permissions.items():
+        if (
+            not isinstance(record, dict)
+            or record.get("level") != catalog_permissions.get(permission)
+            or record.get("description") != descriptions.get(permission)
+        ):
+            raise BrokerError("Plugin package permissions do not match the approved release")
+    for action, record in actions.items():
+        if (
+            not isinstance(action, str)
+            or not isinstance(record, dict)
+            or record.get("permission") not in manifest_permissions
+            or record.get("level") != manifest_permissions[record["permission"]].get("level")
+            or not isinstance(record.get("tool"), str)
+        ):
+            raise BrokerError("Plugin package actions are invalid")
+    try:
+        compile(entrypoint.read_text(encoding="utf-8"), str(entrypoint), "exec")
+    except (OSError, SyntaxError) as exc:
+        raise BrokerError("Plugin package entrypoint is invalid") from exc
+    return plugin
 
 
 def require_source(value: object) -> str:
@@ -398,6 +454,36 @@ def operation_server_add(arguments: dict[str, Any]) -> dict[str, Any]:
     return {"server": alias}
 
 
+def operation_plugin_install(arguments: dict[str, Any]) -> dict[str, Any]:
+    plugin_id = require_id(arguments.get("plugin"), "plugin ID", IDENTIFIER)
+    plugin = verified_plugin(plugin_id)
+    config = load_config()
+    if plugin_id in config["plugins"]:
+        raise BrokerError("Plugin is already installed")
+    config["plugins"][plugin_id] = {
+        "enabled": True,
+        "version": plugin["version"],
+    }
+    atomic_write(CONFIG_FILE, config)
+    return {"plugin": plugin_id}
+
+
+def operation_plugin_remove(arguments: dict[str, Any]) -> dict[str, Any]:
+    plugin_id = require_id(arguments.get("plugin"), "plugin ID", IDENTIFIER)
+    config = load_config()
+    if plugin_id not in config["plugins"]:
+        raise BrokerError("Plugin is not installed")
+    users = sorted(
+        alias for alias, server in config["servers"].items()
+        if isinstance(server, dict) and server.get("plugin") == plugin_id
+    )
+    if users:
+        raise BrokerError("Remove servers using this plugin before removing it")
+    del config["plugins"][plugin_id]
+    atomic_write(CONFIG_FILE, config)
+    return {"plugin": plugin_id}
+
+
 def operation_server_remove(arguments: dict[str, Any]) -> dict[str, Any]:
     alias = require_id(arguments.get("server"), "server alias", ALIAS)
     config = load_config()
@@ -471,6 +557,8 @@ OPERATIONS = {
     "client.server.remove": operation_client_server_remove,
     "server.add": operation_server_add,
     "server.remove": operation_server_remove,
+    "plugin.install": operation_plugin_install,
+    "plugin.remove": operation_plugin_remove,
     "token.put": operation_token_put,
     "token.revoke": operation_token_revoke,
 }

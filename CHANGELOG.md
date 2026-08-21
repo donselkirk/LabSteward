@@ -27,6 +27,13 @@
   revocation removes the visible record without allowing old refresh-token reuse.
 - Add a compact LabSteward shield-and-network mark to the administration header,
   sign-in page, and browser favicon.
+- Add the first available resource plugin for Synology DSM. It exposes only
+  `system.read` and `storage.read`, maps them to two fixed MCP tools, stores DSM
+  credentials in protected per-server files, and constructs bounded summaries
+  that exclude raw responses, shares, files, hostnames, and serial numbers.
+- Add verified Synology install/remove controls to the Plugins page, terminal-only
+  credential setup guidance on the Servers page, and atomic install/update/
+  rollback packaging for the plugin manifest and runtime.
 
 - Add a shared, allowlisted action dispatcher with plugin-free `core.status`
   local execution and the remote `core_status` MCP tool.

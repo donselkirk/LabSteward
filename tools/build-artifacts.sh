@@ -47,6 +47,15 @@ while IFS= read -r line || [[ -n "$line" ]]; do
       cat "${project_root}/src/labsteward_broker.py"
       printf "EOF_LABSTEWARD_BROKER\nchmod 0644 /opt/labsteward/lib/labsteward_broker.py\n"
       ;;
+    "# LABSTEWARD_INSTALL_SYNOLOGY_PLUGIN")
+      printf "install -d -m 0755 /opt/labsteward/plugins/synology\n"
+      printf "cat >/opt/labsteward/plugins/synology/manifest.json <<'EOF_LABSTEWARD_SYNOLOGY_MANIFEST'\n"
+      cat "${project_root}/plugins/synology/manifest.json"
+      printf "EOF_LABSTEWARD_SYNOLOGY_MANIFEST\n"
+      printf "cat >/opt/labsteward/plugins/synology/plugin.py <<'EOF_LABSTEWARD_SYNOLOGY_PLUGIN'\n"
+      cat "${project_root}/plugins/synology/plugin.py"
+      printf "EOF_LABSTEWARD_SYNOLOGY_PLUGIN\nchmod 0644 /opt/labsteward/plugins/synology/manifest.json /opt/labsteward/plugins/synology/plugin.py\n"
+      ;;
     "# LABSTEWARD_INSTALL_CATALOG")
       printf "cat >/opt/labsteward/catalog/plugins.json <<'EOF_LABSTEWARD_CATALOG'\n"
       cat "${project_root}/catalog/plugins.json"

@@ -85,6 +85,14 @@ def main() -> int:
         catalog_file = fixture / "plugins.json"
         version_file = fixture / "VERSION"
         token_dir = fixture / "clients"
+        server_secrets = fixture / "server-secrets"
+        plugins_dir = fixture / "plugins"
+        (plugins_dir / "synology").mkdir(parents=True)
+        server_secrets.mkdir()
+        for name in ("manifest.json", "plugin.py"):
+            destination = plugins_dir / "synology" / name
+            destination.write_bytes((PROJECT_ROOT / "plugins/synology" / name).read_bytes())
+            destination.chmod(0o644)
         transport_file = fixture / "transport.json"
         write_json(
             config_file,
@@ -131,6 +139,8 @@ def main() -> int:
                 "LABSTEWARD_VERSION_FILE": str(version_file),
                 "LABSTEWARD_CLIENT_SECRETS_DIR": str(token_dir),
                 "LABSTEWARD_TRANSPORT_CONFIG": str(transport_file),
+                "LABSTEWARD_PLUGINS_DIR": str(plugins_dir),
+                "LABSTEWARD_SERVER_SECRETS_DIR": str(server_secrets),
             }
         )
         process = subprocess.Popen(
@@ -227,6 +237,73 @@ def main() -> int:
                 },
             )
             require(status == 200 and response["result"]["isError"] is True, "unknown tool must fail safely")  # type: ignore[index]
+
+            write_json(
+                config_file,
+                {
+                    "schema": 1,
+                    "plugins": {"synology": {"enabled": True, "version": "0.1.0"}},
+                    "servers": {
+                        "nas-test": {
+                            "plugin": "synology",
+                            "endpoint": "https://nas.example.test:5001",
+                        }
+                    },
+                    "clients": {
+                        "desktop": {
+                            "enabled": True,
+                            "sources": ["127.0.0.1/32"],
+                            "grants": {},
+                        }
+                    },
+                },
+            )
+            status, response = request(
+                port,
+                context,
+                token,
+                {"jsonrpc": "2.0", "id": 5, "method": "tools/list", "params": {}},
+            )
+            require(
+                status == 200 and [tool["name"] for tool in response["result"]["tools"]] == [  # type: ignore[index]
+                    "core_status", "synology_system_summary", "synology_storage_summary",
+                ],
+                "an enabled Synology plugin must expose only its two fixed tools",
+            )
+            status, response = request(
+                port,
+                context,
+                token,
+                {
+                    "jsonrpc": "2.0", "id": 6, "method": "tools/call",
+                    "params": {"name": "synology_system_summary", "arguments": {"server": "nas-test"}},
+                },
+            )
+            require(
+                status == 200 and response["result"]["isError"] is True,  # type: ignore[index]
+                "Synology access without an explicit client grant must fail",
+            )
+            denied = json.dumps(response)
+            require("permitt" in denied.lower() and "nas.example.test" not in denied, "denial must be safe and sanitized")
+            configured = json.loads(config_file.read_text(encoding="utf-8"))
+            configured["clients"]["desktop"]["grants"] = {
+                "nas-test": {"system.read": "read"}
+            }
+            write_json(config_file, configured)
+            status, response = request(
+                port,
+                context,
+                token,
+                {
+                    "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                    "params": {"name": "synology_system_summary", "arguments": {"server": "nas-test"}},
+                },
+            )
+            require(
+                status == 200 and response["result"]["isError"] is True  # type: ignore[index]
+                and "credentials" in json.dumps(response).lower(),
+                "a grant must not bypass protected credential configuration",
+            )
 
             status, _ = request(port, context, "lst_" + "B" * 43, initialize)
             require(status == 401, "wrong token must be rejected")

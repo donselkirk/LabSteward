@@ -23,7 +23,7 @@ id labsteward-admin >/dev/null 2>&1 || useradd --system --gid labsteward-admin \
 install -d -o root -g root -m 0755 /opt/labsteward /opt/labsteward/lib /opt/labsteward/catalog /opt/labsteward/schemas /opt/labsteward/plugins
 install -d -o root -g labsteward -m 2750 /etc/labsteward
 install -d -o root -g labsteward-admin -m 2750 /etc/labsteward-admin
-install -d -o root -g labsteward -m 2750 /etc/labsteward/secrets /etc/labsteward/secrets/clients
+install -d -o root -g labsteward -m 2750 /etc/labsteward/secrets /etc/labsteward/secrets/clients /etc/labsteward/secrets/servers
 install -d -o labsteward -g labsteward -m 0700 /var/lib/labsteward
 install -d -o labsteward-admin -g labsteward-admin -m 0700 /var/lib/labsteward-admin
 
@@ -42,8 +42,8 @@ cat >/usr/local/bin/stewctl <<'EOF_LABSTEWARD_MANAGER'
 #!/usr/bin/env python3
 """Root-only LabSteward appliance manager.
 
-This manager deliberately handles only non-secret registry data. Plugin-specific
-credential commands will own protected secret-file creation in later releases.
+This manager owns non-secret registry data and terminal-only plugin credential
+entry. Credentials remain in protected files inside the appliance.
 """
 
 from __future__ import annotations
@@ -84,6 +84,10 @@ MCP_FILE = Path(os.environ.get("LABSTEWARD_MCP_FILE", str(BASE_DIR / "lib/labste
 CLIENT_SECRETS_DIR = Path(
     os.environ.get("LABSTEWARD_CLIENT_SECRETS_DIR", "/etc/labsteward/secrets/clients")
 )
+SERVER_SECRETS_DIR = Path(
+    os.environ.get("LABSTEWARD_SERVER_SECRETS_DIR", "/etc/labsteward/secrets/servers")
+)
+PLUGINS_DIR = Path(os.environ.get("LABSTEWARD_PLUGINS_DIR", str(BASE_DIR / "plugins")))
 TRANSPORT_CONFIG_FILE = Path(
     os.environ.get("LABSTEWARD_TRANSPORT_CONFIG", "/etc/labsteward/transport.json")
 )
@@ -268,6 +272,40 @@ def declared_permissions(plugin: dict) -> set[str]:
     raw = plugin.get("permissions", {})
     values = raw if isinstance(raw, list) else raw.keys() if isinstance(raw, dict) else []
     return {require_identifier(str(item), "permission", PERMISSION) for item in values}
+
+
+def require_plugin_contract(plugin_id: str, plugin: dict, manifest: dict) -> None:
+    if (
+        manifest.get("schema") != 1
+        or manifest.get("id") != plugin_id
+        or manifest.get("version") != plugin.get("version")
+        or manifest.get("entrypoint") != "plugin.py"
+        or manifest.get("core_api") != 1
+    ):
+        raise UserError(f"Plugin package metadata is invalid: {plugin_id}")
+    manifest_permissions = manifest.get("permissions")
+    manifest_actions = manifest.get("actions")
+    if not isinstance(manifest_permissions, dict) or not isinstance(manifest_actions, dict):
+        raise UserError(f"Plugin package contract is invalid: {plugin_id}")
+    catalog_permissions = plugin.get("permissions", {})
+    if not isinstance(catalog_permissions, dict) or set(manifest_permissions) != set(catalog_permissions):
+        raise UserError(f"Plugin package permissions do not match the release catalog: {plugin_id}")
+    for permission, record in manifest_permissions.items():
+        if (
+            not isinstance(record, dict)
+            or record.get("level") != catalog_permissions.get(permission)
+            or record.get("description") != plugin.get("permission_descriptions", {}).get(permission)
+        ):
+            raise UserError(f"Plugin package permissions do not match the release catalog: {plugin_id}")
+    for action, record in manifest_actions.items():
+        if (
+            not isinstance(action, str)
+            or not isinstance(record, dict)
+            or record.get("permission") not in manifest_permissions
+            or record.get("level") != manifest_permissions[record["permission"]].get("level")
+            or not isinstance(record.get("tool"), str)
+        ):
+            raise UserError(f"Plugin package actions are invalid: {plugin_id}")
 
 
 def require_endpoint(value: str) -> str:
@@ -712,7 +750,20 @@ def command_plugin_install(args: argparse.Namespace) -> None:
         raise UserError("Plugin is not in the approved release catalog")
     if plugin.get("status") != "available":
         raise UserError(f"Plugin {plugin_id} is catalogued but not yet available")
-    raise UserError("Plugin package installation will be enabled with the first reviewed plugin release")
+    manifest_path = PLUGINS_DIR / plugin_id / "manifest.json"
+    entrypoint = PLUGINS_DIR / plugin_id / "plugin.py"
+    manifest = read_json(manifest_path)
+    require_plugin_contract(plugin_id, plugin, manifest)
+    try:
+        compile(entrypoint.read_text(encoding="utf-8"), str(entrypoint), "exec")
+    except (OSError, SyntaxError) as exc:
+        raise UserError(f"Plugin package entrypoint is invalid: {plugin_id}") from exc
+    config = load_config()
+    if plugin_id in config["plugins"]:
+        raise UserError(f"Plugin is already installed: {plugin_id}")
+    config["plugins"][plugin_id] = {"enabled": True, "version": plugin["version"]}
+    save_config(config)
+    print(f"Installed and enabled plugin {plugin_id} {plugin['version']} from the verified core release.")
 
 
 def command_plugin_remove(args: argparse.Namespace) -> None:
@@ -721,7 +772,11 @@ def command_plugin_remove(args: argparse.Namespace) -> None:
     users = [alias for alias, server in config["servers"].items() if server.get("plugin") == plugin_id]
     if users:
         raise UserError(f"Plugin {plugin_id} is still used by: {', '.join(sorted(users))}")
-    raise UserError("Plugin removal will be enabled with the first reviewed plugin release")
+    if plugin_id not in config["plugins"]:
+        raise UserError(f"Plugin is not installed: {plugin_id}")
+    del config["plugins"][plugin_id]
+    save_config(config)
+    print(f"Disabled and removed plugin registration {plugin_id}; verified release code remains immutable.")
 
 
 def command_server_list(_: argparse.Namespace) -> None:
@@ -759,6 +814,68 @@ def command_server_remove(args: argparse.Namespace) -> None:
     del config["servers"][alias]
     save_config(config)
     print(f"Removed server registration {alias} from {affected} client(s); inspect protected credentials separately.")
+
+
+def server_credential_path(alias: str) -> Path:
+    return SERVER_SECRETS_DIR / f"{alias}.json"
+
+
+def server_ca_path(alias: str) -> Path:
+    return SERVER_SECRETS_DIR / f"{alias}.ca.crt"
+
+
+def prepare_server_secrets_dir() -> None:
+    SERVER_SECRETS_DIR.mkdir(mode=0o2750, parents=True, exist_ok=True)
+    metadata = CONFIG_FILE.stat()
+    os.chmod(SERVER_SECRETS_DIR, 0o2750)
+    os.chown(SERVER_SECRETS_DIR, metadata.st_uid, metadata.st_gid)
+
+
+def command_server_credentials_set(args: argparse.Namespace) -> None:
+    alias = require_identifier(args.alias, "server alias", ALIAS)
+    server = load_config()["servers"].get(alias)
+    if not isinstance(server, dict):
+        raise UserError(f"Unknown server alias: {alias}")
+    if server.get("plugin") != "synology":
+        raise UserError("The selected server does not use the Synology plugin")
+    username = os.environ.get("LABSTEWARD_TEST_SERVER_USERNAME")
+    password = os.environ.get("LABSTEWARD_TEST_SERVER_PASSWORD")
+    if username is None:
+        username = input("DSM username: ").strip()
+    if password is None:
+        password = getpass.getpass("DSM password: ")
+    if not username or len(username) > 128 or any(ord(character) < 32 for character in username):
+        raise UserError("DSM username is invalid")
+    if not password or len(password) > 1024 or "\x00" in password:
+        raise UserError("DSM password is invalid")
+    prepare_server_secrets_dir()
+    if args.ca_file:
+        source = Path(args.ca_file)
+        try:
+            ssl.create_default_context(cafile=str(source))
+        except (OSError, ssl.SSLError) as exc:
+            raise UserError("DSM CA file is unavailable or invalid") from exc
+        install_tls_file(source, server_ca_path(alias), 0o640, service_group=True)
+    save_json(
+        server_credential_path(alias),
+        {"schema": 1, "username": username, "password": password},
+        0o640,
+    )
+    print(f"Stored protected Synology credentials for {alias}; no credential value was displayed.")
+
+
+def command_server_credentials_remove(args: argparse.Namespace) -> None:
+    alias = require_identifier(args.alias, "server alias", ALIAS)
+    if not args.yes:
+        raise UserError("Credential removal requires --yes")
+    removed = False
+    for path in (server_credential_path(alias), server_ca_path(alias)):
+        if path.exists():
+            path.unlink()
+            removed = True
+    if not removed:
+        raise UserError(f"No protected credentials are stored for {alias}")
+    print(f"Removed protected credentials and CA trust for {alias}.")
 
 
 def validation_errors(config: dict, catalog: dict[str, dict]) -> list[str]:
@@ -861,6 +978,30 @@ def validation_errors(config: dict, catalog: dict[str, dict]) -> list[str]:
             errors.append(f"installed plugin is absent from catalog: {plugin_id}")
         if not isinstance(installed, dict) or not isinstance(installed.get("enabled"), bool):
             errors.append(f"invalid installed plugin record: {plugin_id}")
+            continue
+        plugin = catalog.get(plugin_id, {})
+        if installed.get("version") != plugin.get("version"):
+            errors.append(f"installed plugin version does not match the catalog: {plugin_id}")
+        try:
+            require_plugin_contract(
+                plugin_id,
+                plugin,
+                read_json(PLUGINS_DIR / plugin_id / "manifest.json"),
+            )
+            entrypoint = PLUGINS_DIR / plugin_id / "plugin.py"
+            compile(entrypoint.read_text(encoding="utf-8"), str(entrypoint), "exec")
+        except (UserError, OSError, SyntaxError) as exc:
+            errors.append(str(exc))
+        for path in (
+            PLUGINS_DIR / plugin_id / "manifest.json",
+            PLUGINS_DIR / plugin_id / "plugin.py",
+        ):
+            if not path.is_file():
+                errors.append(f"installed plugin file is missing: {path}")
+                continue
+            security_error = validate_file_security(path, 0o644, BASE_DIR.stat().st_gid)
+            if security_error:
+                errors.append(security_error)
     for alias, server in config["servers"].items():
         if not isinstance(server, dict):
             errors.append(f"invalid server record: {alias}")
@@ -875,6 +1016,11 @@ def validation_errors(config: dict, catalog: dict[str, dict]) -> list[str]:
         if plugin_id not in config["plugins"]:
             errors.append(f"server {alias} uses an uninstalled plugin: {plugin_id}")
             continue
+        for path in (server_credential_path(alias), server_ca_path(alias)):
+            if path.exists():
+                security_error = validate_file_security(path, 0o640, CONFIG_FILE.stat().st_gid)
+                if security_error:
+                    errors.append(security_error)
     for client_id, client in config["clients"].items():
         try:
             require_identifier(client_id, "client ID", IDENTIFIER)
@@ -984,7 +1130,8 @@ def command_action_run(args: argparse.Namespace) -> None:
     finally:
         sys.path.pop(0)
     try:
-        result = module.dispatch_action(args.action, {})
+        arguments = {} if args.action == "core.status" else {"server": args.server}
+        result = module.dispatch_action(args.action, arguments)
     except module.DispatchError as exc:
         raise UserError(exc.message) from exc
     print(json.dumps(result, indent=2, sort_keys=True))
@@ -1432,7 +1579,11 @@ def parser() -> argparse.ArgumentParser:
     action = commands.add_parser("action")
     action_commands = action.add_subparsers(dest="action_command", required=True)
     run_action = action_commands.add_parser("run")
-    run_action.add_argument("action", choices=["core.status"])
+    run_action.add_argument(
+        "action",
+        choices=["core.status", "synology.system.summary", "synology.storage.summary"],
+    )
+    run_action.add_argument("--server")
     run_action.set_defaults(handler=command_action_run)
 
     transport = commands.add_parser("transport")
@@ -1509,6 +1660,18 @@ def parser() -> argparse.ArgumentParser:
     remove_server.add_argument("alias")
     remove_server.add_argument("--yes", action="store_true")
     remove_server.set_defaults(handler=command_server_remove)
+    credentials = server_commands.add_parser("credentials")
+    credential_commands = credentials.add_subparsers(
+        dest="server_credential_command", required=True
+    )
+    set_credentials = credential_commands.add_parser("set")
+    set_credentials.add_argument("alias")
+    set_credentials.add_argument("--ca-file")
+    set_credentials.set_defaults(handler=command_server_credentials_set)
+    remove_credentials = credential_commands.add_parser("remove")
+    remove_credentials.add_argument("alias")
+    remove_credentials.add_argument("--yes", action="store_true")
+    remove_credentials.set_defaults(handler=command_server_credentials_remove)
 
     client = commands.add_parser("client", aliases=["clients"])
     client_commands = client.add_subparsers(dest="client_command", required=True)
@@ -1580,6 +1743,7 @@ readonly CORE_PATH="${LABSTEWARD_CORE_FILE:-${BASE_DIR}/lib/labsteward_core.py}"
 readonly MCP_PATH="${LABSTEWARD_MCP_FILE:-${BASE_DIR}/lib/labsteward_mcp.py}"
 readonly ADMIN_PATH="${LABSTEWARD_ADMIN_FILE:-${BASE_DIR}/lib/labsteward_admin.py}"
 readonly BROKER_PATH="${LABSTEWARD_BROKER_FILE:-${BASE_DIR}/lib/labsteward_broker.py}"
+readonly SYN_PLUGIN_DIR="${LABSTEWARD_SYNOLOGY_PLUGIN_DIR:-${BASE_DIR}/plugins/synology}"
 readonly SYSTEMD_UNIT_PATH="${LABSTEWARD_SYSTEMD_UNIT:-/etc/systemd/system/labsteward.service}"
 readonly ADMIN_SYSTEMD_UNIT_PATH="${LABSTEWARD_ADMIN_SYSTEMD_UNIT:-/etc/systemd/system/labsteward-admin.service}"
 readonly BROKER_SYSTEMD_UNIT_PATH="${LABSTEWARD_BROKER_SYSTEMD_UNIT:-/etc/systemd/system/labsteward-broker.service}"
@@ -1613,6 +1777,7 @@ update_url="${update_url%/}"
 stage="$(mktemp -d)"
 backup=""
 runtime_bundle=0
+synology_bundle=0
 service_was_active=0
 cleanup() {
   rm -rf "$stage"
@@ -1668,6 +1833,7 @@ required_assets=(stewctl self-update.sh labsteward-sanitize.py plugins.json conf
 optional_runtime_assets=(labsteward-core.py labsteward-mcp.py labsteward-admin.py \
   labsteward-broker.py labsteward-core.service labsteward-admin.service \
   labsteward-broker.service)
+optional_synology_assets=(synology-plugin.py synology-manifest.json)
 for asset in "${required_assets[@]}"; do
   grep -q " ${asset}$" "${stage}/SHA256SUMS" || {
     echo "LabSteward release is missing required checksum metadata for ${asset}." >&2
@@ -1688,6 +1854,22 @@ fi
 if ((optional_count)); then
   runtime_bundle=1
   for asset in "${optional_runtime_assets[@]}"; do
+    download_asset "${asset_url}/${asset}" "${stage}/${asset}" "$asset"
+  done
+fi
+synology_count=0
+for asset in "${optional_synology_assets[@]}"; do
+  if grep -q " ${asset}$" "${stage}/SHA256SUMS"; then
+    synology_count=$((synology_count + 1))
+  fi
+done
+if ((synology_count != 0 && synology_count != ${#optional_synology_assets[@]})); then
+  echo "LabSteward release contains an incomplete Synology plugin bundle." >&2
+  exit 1
+fi
+if ((synology_count)); then
+  synology_bundle=1
+  for asset in "${optional_synology_assets[@]}"; do
     download_asset "${asset_url}/${asset}" "${stage}/${asset}" "$asset"
   done
 fi
@@ -1740,6 +1922,16 @@ rollback() {
       "$SYSTEMCTL" restart labsteward.service >/dev/null 2>&1 || true
     fi
   fi
+  if ((synology_bundle)); then
+    for item in synology-plugin.py synology-manifest.json; do
+      destination="${SYN_PLUGIN_DIR}/${item#synology-}"
+      if [[ -e "${backup}/${item}" ]]; then
+        cp -a "${backup}/${item}" "$destination"
+      else
+        rm -f "$destination"
+      fi
+    done
+  fi
   [[ ! -e "${backup}/plugins.json" ]] || cp -a "${backup}/plugins.json" "${BASE_DIR}/catalog/plugins.json"
   [[ ! -e "${backup}/config.schema.json" ]] || cp -a "${backup}/config.schema.json" "${BASE_DIR}/schemas/config.schema.json"
   [[ ! -e "${backup}/VERSION" ]] || cp -a "${backup}/VERSION" "$VERSION_FILE"
@@ -1766,6 +1958,11 @@ if ((runtime_bundle)); then
   [[ ! -e "$ADMIN_SYSTEMD_UNIT_PATH" ]] || cp -a "$ADMIN_SYSTEMD_UNIT_PATH" "${backup}/labsteward-admin.service"
   [[ ! -e "$BROKER_SYSTEMD_UNIT_PATH" ]] || cp -a "$BROKER_SYSTEMD_UNIT_PATH" "${backup}/labsteward-broker.service"
 fi
+if ((synology_bundle)); then
+  install -d -m 0755 "$SYN_PLUGIN_DIR"
+  [[ ! -e "${SYN_PLUGIN_DIR}/plugin.py" ]] || cp -a "${SYN_PLUGIN_DIR}/plugin.py" "${backup}/synology-plugin.py"
+  [[ ! -e "${SYN_PLUGIN_DIR}/manifest.json" ]] || cp -a "${SYN_PLUGIN_DIR}/manifest.json" "${backup}/synology-manifest.json"
+fi
 [[ ! -e "${BASE_DIR}/catalog/plugins.json" ]] || cp -a "${BASE_DIR}/catalog/plugins.json" "${backup}/plugins.json"
 [[ ! -e "${BASE_DIR}/schemas/config.schema.json" ]] || cp -a "${BASE_DIR}/schemas/config.schema.json" "${backup}/config.schema.json"
 [[ ! -e "$VERSION_FILE" ]] || cp -a "$VERSION_FILE" "${backup}/VERSION"
@@ -1790,6 +1987,10 @@ if ((runtime_bundle)); then
   install -D -m 0644 "${stage}/labsteward-admin.service" "$ADMIN_SYSTEMD_UNIT_PATH"
   install -D -m 0644 "${stage}/labsteward-broker.service" "$BROKER_SYSTEMD_UNIT_PATH"
   "$SYSTEMCTL" daemon-reload
+fi
+if ((synology_bundle)); then
+  install -m 0644 "${stage}/synology-plugin.py" "${SYN_PLUGIN_DIR}/plugin.py"
+  install -m 0644 "${stage}/synology-manifest.json" "${SYN_PLUGIN_DIR}/manifest.json"
 fi
 install -m 0644 "${stage}/plugins.json" "${BASE_DIR}/catalog/plugins.json"
 install -m 0644 "${stage}/config.schema.json" "${BASE_DIR}/schemas/config.schema.json"
@@ -1954,7 +2155,9 @@ paths, and upstream requests are intentionally outside this interface.
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -1969,8 +2172,19 @@ VERSION_FILE = Path(os.environ.get("LABSTEWARD_VERSION_FILE", str(BASE_DIR / "VE
 TRANSPORT_CONFIG_FILE = Path(
     os.environ.get("LABSTEWARD_TRANSPORT_CONFIG", "/etc/labsteward/transport.json")
 )
+PLUGINS_DIR = Path(os.environ.get("LABSTEWARD_PLUGINS_DIR", str(BASE_DIR / "plugins")))
+SERVER_SECRETS_DIR = Path(
+    os.environ.get("LABSTEWARD_SERVER_SECRETS_DIR", "/etc/labsteward/secrets/servers")
+)
 
 MAX_JSON_FILE_SIZE = 1024 * 1024
+SERVER_ALIAS = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
+SYNOLOGY_ACTIONS = {
+    "synology.system.summary": "system.read",
+    "synology_system_summary": "system.read",
+    "synology.storage.summary": "storage.read",
+    "synology_storage_summary": "storage.read",
+}
 
 
 class DispatchError(Exception):
@@ -2031,10 +2245,70 @@ def _registry_summary() -> dict[str, Any]:
     }
 
 
+def _load_synology_plugin() -> Any:
+    path = PLUGINS_DIR / "synology" / "plugin.py"
+    try:
+        spec = importlib.util.spec_from_file_location("labsteward_plugin_synology", path)
+        if spec is None or spec.loader is None:
+            raise ImportError("plugin loader is unavailable")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except (OSError, ImportError, SyntaxError, AttributeError) as exc:
+        raise DispatchError("plugin_unavailable", "Synology plugin is unavailable") from exc
+    if module.PLUGIN_ID != "synology" or module.PLUGIN_VERSION != "0.1.0":
+        raise DispatchError("plugin_unavailable", "Synology plugin version is incompatible")
+    return module
+
+
+def _synology_enabled(config: dict[str, Any]) -> bool:
+    record = config.get("plugins", {}).get("synology")
+    return isinstance(record, dict) and record.get("enabled") is True
+
+
+def _synology_tools(config: dict[str, Any]) -> list[dict[str, Any]]:
+    if not _synology_enabled(config):
+        return []
+    return _load_synology_plugin().tool_definitions()
+
+
+def _authorized_synology_target(
+    config: dict[str, Any], alias: object, permission: str, client_id: str | None
+) -> tuple[str, dict[str, Any]]:
+    if not isinstance(alias, str) or not SERVER_ALIAS.fullmatch(alias):
+        raise DispatchError("invalid_arguments", "A valid registered server alias is required")
+    if not _synology_enabled(config):
+        raise DispatchError("plugin_unavailable", "Synology plugin is not installed and enabled")
+    server = config.get("servers", {}).get(alias)
+    if not isinstance(server, dict) or server.get("plugin") != "synology":
+        raise DispatchError("unknown_server", "Unknown Synology server")
+    if client_id is not None:
+        client = config.get("clients", {}).get(client_id)
+        grants = client.get("grants", {}) if isinstance(client, dict) else {}
+        levels = grants.get(alias, {}) if isinstance(grants, dict) else {}
+        if isinstance(levels, list):
+            levels = {name: "read" for name in levels if isinstance(name, str)}
+        granted = levels.get(permission) if isinstance(levels, dict) else None
+        if granted not in {"read", "write"}:
+            raise DispatchError("permission_denied", "Client is not permitted to read this Synology resource")
+    return alias, server
+
+
+def _synology_credentials(alias: str) -> tuple[dict[str, Any], Path | None]:
+    credential_path = SERVER_SECRETS_DIR / f"{alias}.json"
+    try:
+        if credential_path.stat().st_mode & 0o137:
+            raise OSError("credential permissions are unsafe")
+        credentials = _read_object(credential_path)
+    except (OSError, DispatchError) as exc:
+        raise DispatchError("credentials_unavailable", "Synology credentials are not configured") from exc
+    ca_path = SERVER_SECRETS_DIR / f"{alias}.ca.crt"
+    return credentials, ca_path if ca_path.is_file() else None
+
+
 def tool_definitions() -> list[dict[str, Any]]:
     """Return the complete allowlisted MCP tool catalog for this core release."""
 
-    return [
+    tools = [
         {
             "name": "core_status",
             "title": "LabSteward core status",
@@ -2077,17 +2351,38 @@ def tool_definitions() -> list[dict[str, Any]]:
             },
         }
     ]
+    config = _read_object(CONFIG_FILE)
+    tools.extend(_synology_tools(config))
+    return tools
 
 
-def dispatch_action(action: str, arguments: Any) -> dict[str, Any]:
+def dispatch_action(
+    action: str, arguments: Any, *, client_id: str | None = None
+) -> dict[str, Any]:
     """Run one fixed action and return only its declared, sanitized result."""
 
-    if action not in {"core.status", "core_status"}:
+    if action in {"core.status", "core_status"}:
+        if not isinstance(arguments, dict) or arguments:
+            raise DispatchError("invalid_arguments", "core.status accepts no arguments")
+        # _registry_summary constructs the result from an explicit output allowlist.
+        return sanitize_result(_registry_summary())
+    permission = SYNOLOGY_ACTIONS.get(action)
+    if permission is None:
         raise DispatchError("unknown_action", "Unknown LabSteward action")
-    if not isinstance(arguments, dict) or arguments:
-        raise DispatchError("invalid_arguments", "core.status accepts no arguments")
-    # _registry_summary constructs the result from an explicit output allowlist.
-    return sanitize_result(_registry_summary())
+    if not isinstance(arguments, dict) or set(arguments) != {"server"}:
+        raise DispatchError("invalid_arguments", "Synology actions require only a server alias")
+    config = _read_object(CONFIG_FILE)
+    alias, server = _authorized_synology_target(config, arguments["server"], permission, client_id)
+    credentials, ca_file = _synology_credentials(alias)
+    plugin = _load_synology_plugin()
+    canonical = action.replace("synology_system_summary", "synology.system.summary").replace(
+        "synology_storage_summary", "synology.storage.summary"
+    )
+    try:
+        result = plugin.execute(canonical, server.get("endpoint", ""), credentials, ca_file=ca_file)
+    except plugin.PluginError as exc:
+        raise DispatchError("upstream_error", str(exc)) from exc
+    return sanitize_result(result)
 EOF_LABSTEWARD_CORE
 chmod 0644 /opt/labsteward/lib/labsteward_core.py
 cat >/opt/labsteward/lib/labsteward_mcp.py <<'EOF_LABSTEWARD_MCP'
@@ -2575,7 +2870,7 @@ class MCPHandler(BaseHTTPRequestHandler):
             self.send_empty(202)
             return
         try:
-            result = self.dispatch(method, request.get("params", {}))
+            result = self.dispatch(method, request.get("params", {}), client_id=client_id)
         except DispatchError as exc:
             audit(
                 "tool_rejected",
@@ -2599,7 +2894,7 @@ class MCPHandler(BaseHTTPRequestHandler):
         audit("request_succeeded", source=source, client=client_id, method=method)
         self.send_json(200, {"jsonrpc": "2.0", "id": request_id, "result": result})
 
-    def dispatch(self, method: str, params: object) -> dict[str, Any]:
+    def dispatch(self, method: str, params: object, *, client_id: str) -> dict[str, Any]:
         if method == "initialize":
             if not isinstance(params, dict):
                 raise DispatchError("invalid_arguments", "Invalid initialize parameters")
@@ -2628,9 +2923,10 @@ class MCPHandler(BaseHTTPRequestHandler):
                 raise DispatchError("invalid_arguments", "Invalid tool call")
             name = params.get("name")
             arguments = params.get("arguments", {})
-            if name != "core_status":
+            available_tools = {tool["name"] for tool in tool_definitions()}
+            if name not in available_tools:
                 raise DispatchError("unknown_action", "Unknown LabSteward tool")
-            result = dispatch_action("core.status", arguments)
+            result = dispatch_action(str(name), arguments, client_id=client_id)
             return {
                 "content": [
                     {
@@ -2750,81 +3046,69 @@ TOKEN_VALUE = re.compile(r"^ls[acr]_[A-Za-z0-9_-]{43}$")
 BRAND_MARK_PNG = base64.b64decode(
 (
     "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"
-    "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"
+    "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"
+    "RK5CYII="
 )
 )
+
+
+
 
 
 class AdminError(Exception):
@@ -3100,7 +3384,7 @@ class AdminServer(ThreadingHTTPServer):
 STYLE = """
 :root{color-scheme:dark;--bg:#0b1220;--panel:#131d2f;--line:#2a3850;--text:#e9eef7;--muted:#9aabc1;--accent:#6ee7b7;--danger:#fb7185}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px system-ui,sans-serif}main{max-width:1100px;margin:0 auto;padding:32px 20px}h1,h2{margin:.2em 0 .7em}h3,h4{margin:.4em 0 .7em}p{line-height:1.5}.muted{color:var(--muted)}
-nav,.client-head,.row-actions,.page-tabs,.brand,.login-brand{display:flex;justify-content:space-between;align-items:center;gap:10px}nav{margin-bottom:14px}.brand,.login-brand{justify-content:flex-start}.brand img{width:42px;height:42px}.brand h1,.login-brand h1{margin:0}.login-brand img{width:52px;height:52px}.page-tabs{justify-content:flex-start;margin-bottom:24px;border-bottom:1px solid var(--line)}.page-tabs a{padding:10px 14px;text-decoration:none;color:var(--muted);border-bottom:2px solid transparent}.page-tabs a.active{color:var(--text);border-color:var(--accent)}
+nav,.client-head,.row-actions,.page-tabs,.brand,.login-brand{display:flex;justify-content:space-between;align-items:center;gap:10px}nav{margin-bottom:14px}.brand,.login-brand{justify-content:flex-start}.brand img{width:42px;height:42px}.brand h1,.login-brand h1{margin:0;font-family:Georgia,'Times New Roman',serif;font-weight:700;letter-spacing:.01em}.brand h1{font-size:42px;line-height:1}.login-brand h1{font-size:36px;line-height:1}.login-brand img{width:52px;height:52px}.page-tabs{justify-content:flex-start;margin-bottom:24px;border-bottom:1px solid var(--line)}.page-tabs a{padding:10px 14px;text-decoration:none;color:var(--muted);border-bottom:2px solid transparent}.page-tabs a.active{color:var(--text);border-color:var(--accent)}
 .card,section,.client-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin:14px 0}.client-card{background:#101a2b}.client-settings{display:grid;grid-template-columns:minmax(250px,1fr) auto;gap:14px;align-items:end}.row-actions{justify-content:flex-end;white-space:nowrap}
 .server-access{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#0d1728}.access-row+.access-row{border-top:1px solid var(--line)}.access-row summary{display:grid;grid-template-columns:minmax(180px,1fr) auto auto;gap:14px;align-items:start;padding:13px 14px;cursor:pointer;list-style:none}.access-row summary::-webkit-details-marker{display:none}.collapse-icon{display:inline-block;width:9px;height:9px;border-right:2px solid var(--accent);border-bottom:2px solid var(--accent);transform:rotate(45deg);transition:transform .15s ease;margin:2px 4px 0}.access-row[open] .collapse-icon{transform:rotate(225deg);margin-top:7px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.access-body{border-top:1px solid var(--line);padding:14px}.permission-list{display:grid;gap:0;margin-bottom:14px}.permission-control{display:grid;grid-template-columns:minmax(220px,1fr) auto;align-items:start;gap:16px;padding:10px 0}.permission-control+.permission-control{border-top:1px solid var(--line)}.permission-name{font-weight:600}.permission-description{display:block;color:var(--muted);font-size:13px;margin-top:3px}.help{display:inline-grid;place-items:center;width:17px;height:17px;border:1px solid var(--line);border-radius:50%;font-size:11px;color:var(--muted);cursor:help;margin-left:5px}.level-toggle{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}.level-choice{display:inline-flex;align-items:center;margin:0;padding:7px 11px;background:#111d31;cursor:pointer}.level-choice+.level-choice{border-left:1px solid var(--line)}.level-choice:has(input:checked){background:#1d6f58;color:#fff}.level-choice input{position:absolute;opacity:0;pointer-events:none}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid var(--line);padding:10px 8px;vertical-align:top}input,select,button,.button-link{font:inherit;border-radius:7px;border:1px solid var(--line);padding:8px 10px;background:#0d1728;color:var(--text)}button{cursor:pointer;background:#1d6f58;border-color:#2ca47e}button.secondary{background:#18243a;border-color:var(--line)}button.danger{background:#7f1d32;border-color:#be3453}button:disabled{cursor:not-allowed;opacity:.55}.button-link{display:inline-block;text-decoration:none;background:#18243a}form.inline{display:inline-flex;gap:8px;flex-wrap:wrap}.notice{border-left:4px solid var(--accent);padding:10px 14px;background:#10251f}.error{border-left-color:var(--danger);background:#2b1118}.pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:3px 8px;margin:2px}.login{max-width:430px;margin:10vh auto}label{display:block;margin:12px 0 5px}a{color:var(--accent)}
@@ -3163,7 +3447,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         page = (
             "<!doctype html><html lang=en><head><meta charset=utf-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
-            f"<title>{html.escape(title)} · LabSteward</title>"
+            f"<title>{html.escape(title)} · LABSteward</title>"
             "<link rel=icon type=image/png href=/favicon.png>"
             "<link rel=stylesheet href=/admin/style.css></head><body><main>"
             f"{content}</main></body></html>"
@@ -3377,7 +3661,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         self.send_html(
             200,
             "Administrator sign in",
-            "<section class=login><div class=login-brand><img src=/favicon.png alt=''><h1>LabSteward</h1></div><p class=muted>Administrator sign in</p>"
+            "<section class=login><div class=login-brand><img src=/favicon.png alt=''><h1>LABSteward</h1></div><p class=muted>Administrator sign in</p>"
             f"{error_html}<form method=post action=/admin/login>{transaction_field}"
             "<label for=username>Username</label><input id=username name=username required autocomplete=username>"
             "<label for=password>Password</label><input id=password name=password type=password required autocomplete=current-password>"
@@ -3486,7 +3770,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             return "".join(controls) or "<span class=muted>No permissions are declared by this plugin.</span>"
 
         navigation = (
-            "<nav><div class=brand><img src=/favicon.png alt=''><div><h1>LabSteward</h1><span class=muted>Administration</span></div></div>"
+            "<nav><div class=brand><img src=/favicon.png alt=''><h1>LABSteward</h1></div>"
             "<form method=post action=/admin/logout>"
             f"<input type=hidden name=csrf value='{csrf}'><button type=submit>Sign out</button></form></nav>"
             "<div class=page-tabs>"
@@ -3580,10 +3864,19 @@ class AdminHandler(BaseHTTPRequestHandler):
             configuration = ""
             if selected_server in servers:
                 selected = servers[selected_server]
+                plugin_id = str(selected.get("plugin", ""))
+                access_help = (
+                    "<p class=notice>Configure a least-privilege DSM account from the LabSteward terminal with "
+                    f"<code>stewctl server credentials set {html.escape(selected_server)}</code>. "
+                    "Add <code>--ca-file /path/to/dsm-ca.crt</code> when DSM uses a private CA. "
+                    "Credential values are never accepted or displayed by this page.</p>"
+                    if plugin_id == "synology"
+                    else "<p class=notice>This plugin has not released its credential setup yet.</p>"
+                )
                 configuration = (
                     f"<section><h2>Configure {html.escape(selected_server)} access</h2>"
-                    f"<p class=muted>{html.escape(str(selected.get('plugin','')))} at {html.escape(str(selected.get('endpoint','')))}</p>"
-                    "<p class=notice>This plugin has not released its write-only credential fields yet. Access setup will appear here with the reviewed plugin credential schema.</p></section>"
+                    f"<p class=muted>{html.escape(plugin_id)} at {html.escape(str(selected.get('endpoint','')))}</p>"
+                    f"{access_help}</section>"
                 )
             content = (
                 "<section><h2>Servers</h2><p class=muted>Register each server once. Removing it automatically removes it from every client.</p>"
@@ -3609,18 +3902,32 @@ class AdminHandler(BaseHTTPRequestHandler):
                     f"<span class=pill title='{html.escape(str(descriptions.get(name, 'Plugin-defined capability.')))}'>{html.escape(name)}</span>"
                     for name in permission_names(plugin_id)
                 ) or "<span class=muted>None released</span>"
+                if plugin_id in installed:
+                    action = (
+                        "<form class=inline method=post action=/admin/plugin/remove>"
+                        f"<input type=hidden name=csrf value='{csrf}'><input type=hidden name=plugin value='{html.escape(plugin_id)}'>"
+                        "<button class=danger type=submit>Remove</button></form>"
+                    )
+                elif plugin.get("status") == "available":
+                    action = (
+                        "<form class=inline method=post action=/admin/plugin/install>"
+                        f"<input type=hidden name=csrf value='{csrf}'><input type=hidden name=plugin value='{html.escape(plugin_id)}'>"
+                        "<button type=submit>Install</button></form>"
+                    )
+                else:
+                    action = "<span class=muted>Not available</span>"
                 plugin_rows.append(
-                    f"<tr><td>{html.escape(str(plugin.get('name', plugin_id)))}</td><td>{html.escape(status)}</td><td>{permissions}</td></tr>"
+                    f"<tr><td>{html.escape(str(plugin.get('name', plugin_id)))}</td><td>{html.escape(status)}</td><td>{permissions}</td><td>{action}</td></tr>"
                 )
             content = (
                 "<section><h2>Plugins</h2><p class=muted>Plugins define available capabilities and their descriptions.</p>"
-                "<table><thead><tr><th>Plugin</th><th>Status</th><th>Permissions</th></tr></thead><tbody>"
-                + ("".join(plugin_rows) or "<tr><td colspan=3>No catalogue entries</td></tr>")
+                "<table><thead><tr><th>Plugin</th><th>Status</th><th>Permissions</th><th>Actions</th></tr></thead><tbody>"
+                + ("".join(plugin_rows) or "<tr><td colspan=4>No catalogue entries</td></tr>")
                 + "</tbody></table></section>"
             )
         else:
             raise AdminError("Unknown administration page")
-        self.send_html(200, f"LabSteward {page.title()}", navigation + notice_html + content)
+        self.send_html(200, f"LABSteward {page.title()}", navigation + notice_html + content)
 
     def admin_operation(self, path: str) -> None:
         form = self.read_form()
@@ -3688,6 +3995,12 @@ class AdminHandler(BaseHTTPRequestHandler):
                 "Server removed from every client. Protected credentials were not deleted.",
                 page="servers",
             )
+        elif path == "/admin/plugin/install":
+            broker_call("plugin.install", {"plugin": form.get("plugin", "")})
+            self.dashboard("Plugin installed and enabled from the verified release package.", page="plugins")
+        elif path == "/admin/plugin/remove":
+            broker_call("plugin.remove", {"plugin": form.get("plugin", "")})
+            self.dashboard("Plugin disabled; its immutable release code was retained.", page="plugins")
         else:
             raise AdminError("Unsupported administration operation")
 
@@ -3783,7 +4096,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             200,
             "Trust client",
             "<section class=login><h1>Trust this MCP client?</h1>"
-            f"<p><strong>{html.escape(str(transaction['client_name']))}</strong> is requesting access to LabSteward.</p>"
+            f"<p><strong>{html.escape(str(transaction['client_name']))}</strong> is requesting access to LABSteward.</p>"
             "<p class=notice>Approval grants only the sanitized built-in health check. It does not grant access to any server or plugin.</p>"
             f"<p>Observed source: <code>{html.escape(self.source)}</code><br>Callback: <code>{html.escape(str(transaction['redirect_uri']))}</code></p>"
             "<form method=post action=/authorize>"
@@ -4058,6 +4371,7 @@ CATALOG_FILE = Path(
     os.environ.get("LABSTEWARD_CATALOG_FILE", "/opt/labsteward/catalog/plugins.json")
 )
 VERSION_FILE = Path(os.environ.get("LABSTEWARD_VERSION_FILE", "/opt/labsteward/VERSION"))
+PLUGINS_DIR = Path(os.environ.get("LABSTEWARD_PLUGINS_DIR", "/opt/labsteward/plugins"))
 TOKEN_SNAPSHOT = Path(
     os.environ.get("LABSTEWARD_OAUTH_TOKEN_FILE", "/etc/labsteward/secrets/oauth-tokens.json")
 )
@@ -4167,6 +4481,61 @@ def declared_permissions(plugin: dict[str, Any]) -> set[str]:
     raw = plugin.get("permissions", {})
     values = raw if isinstance(raw, list) else raw.keys() if isinstance(raw, dict) else []
     return {require_id(item, "permission", PERMISSION) for item in values}
+
+
+def verified_plugin(plugin_id: str) -> dict[str, Any]:
+    plugin = next(
+        (
+            item for item in load_catalog()["plugins"]
+            if isinstance(item, dict) and item.get("id") == plugin_id
+        ),
+        None,
+    )
+    if not isinstance(plugin, dict) or plugin.get("status") != "available":
+        raise BrokerError("Plugin is not available in the approved release catalog")
+    manifest = read_object(PLUGINS_DIR / plugin_id / "manifest.json")
+    entrypoint = PLUGINS_DIR / plugin_id / "plugin.py"
+    if (
+        manifest.get("schema") != 1
+        or manifest.get("id") != plugin_id
+        or manifest.get("version") != plugin.get("version")
+        or manifest.get("entrypoint") != "plugin.py"
+        or manifest.get("core_api") != 1
+    ):
+        raise BrokerError("Plugin package metadata does not match the approved release")
+    manifest_permissions = manifest.get("permissions")
+    actions = manifest.get("actions")
+    catalog_permissions = plugin.get("permissions", {})
+    descriptions = plugin.get("permission_descriptions", {})
+    if (
+        not isinstance(manifest_permissions, dict)
+        or not isinstance(actions, dict)
+        or not isinstance(catalog_permissions, dict)
+        or not isinstance(descriptions, dict)
+        or set(manifest_permissions) != set(catalog_permissions)
+    ):
+        raise BrokerError("Plugin package contract does not match the approved release")
+    for permission, record in manifest_permissions.items():
+        if (
+            not isinstance(record, dict)
+            or record.get("level") != catalog_permissions.get(permission)
+            or record.get("description") != descriptions.get(permission)
+        ):
+            raise BrokerError("Plugin package permissions do not match the approved release")
+    for action, record in actions.items():
+        if (
+            not isinstance(action, str)
+            or not isinstance(record, dict)
+            or record.get("permission") not in manifest_permissions
+            or record.get("level") != manifest_permissions[record["permission"]].get("level")
+            or not isinstance(record.get("tool"), str)
+        ):
+            raise BrokerError("Plugin package actions are invalid")
+    try:
+        compile(entrypoint.read_text(encoding="utf-8"), str(entrypoint), "exec")
+    except (OSError, SyntaxError) as exc:
+        raise BrokerError("Plugin package entrypoint is invalid") from exc
+    return plugin
 
 
 def require_source(value: object) -> str:
@@ -4428,6 +4797,36 @@ def operation_server_add(arguments: dict[str, Any]) -> dict[str, Any]:
     return {"server": alias}
 
 
+def operation_plugin_install(arguments: dict[str, Any]) -> dict[str, Any]:
+    plugin_id = require_id(arguments.get("plugin"), "plugin ID", IDENTIFIER)
+    plugin = verified_plugin(plugin_id)
+    config = load_config()
+    if plugin_id in config["plugins"]:
+        raise BrokerError("Plugin is already installed")
+    config["plugins"][plugin_id] = {
+        "enabled": True,
+        "version": plugin["version"],
+    }
+    atomic_write(CONFIG_FILE, config)
+    return {"plugin": plugin_id}
+
+
+def operation_plugin_remove(arguments: dict[str, Any]) -> dict[str, Any]:
+    plugin_id = require_id(arguments.get("plugin"), "plugin ID", IDENTIFIER)
+    config = load_config()
+    if plugin_id not in config["plugins"]:
+        raise BrokerError("Plugin is not installed")
+    users = sorted(
+        alias for alias, server in config["servers"].items()
+        if isinstance(server, dict) and server.get("plugin") == plugin_id
+    )
+    if users:
+        raise BrokerError("Remove servers using this plugin before removing it")
+    del config["plugins"][plugin_id]
+    atomic_write(CONFIG_FILE, config)
+    return {"plugin": plugin_id}
+
+
 def operation_server_remove(arguments: dict[str, Any]) -> dict[str, Any]:
     alias = require_id(arguments.get("server"), "server alias", ALIAS)
     config = load_config()
@@ -4501,6 +4900,8 @@ OPERATIONS = {
     "client.server.remove": operation_client_server_remove,
     "server.add": operation_server_add,
     "server.remove": operation_server_remove,
+    "plugin.install": operation_plugin_install,
+    "plugin.remove": operation_plugin_remove,
     "token.put": operation_token_put,
     "token.revoke": operation_token_revoke,
 }
@@ -4584,6 +4985,507 @@ if __name__ == "__main__":
     raise SystemExit(main())
 EOF_LABSTEWARD_BROKER
 chmod 0644 /opt/labsteward/lib/labsteward_broker.py
+install -d -m 0755 /opt/labsteward/plugins/synology
+cat >/opt/labsteward/plugins/synology/manifest.json <<'EOF_LABSTEWARD_SYNOLOGY_MANIFEST'
+{
+  "schema": 1,
+  "id": "synology",
+  "name": "Synology DSM",
+  "version": "0.1.0",
+  "core_api": 1,
+  "entrypoint": "plugin.py",
+  "permissions": {
+    "system.read": {
+      "level": "read",
+      "description": "Read DSM system health and bounded resource utilization."
+    },
+    "storage.read": {
+      "level": "read",
+      "description": "Read storage pool, volume, capacity, and aggregate disk health."
+    }
+  },
+  "actions": {
+    "synology.system.summary": {
+      "tool": "synology_system_summary",
+      "permission": "system.read",
+      "level": "read"
+    },
+    "synology.storage.summary": {
+      "tool": "synology_storage_summary",
+      "permission": "storage.read",
+      "level": "read"
+    }
+  }
+}
+EOF_LABSTEWARD_SYNOLOGY_MANIFEST
+cat >/opt/labsteward/plugins/synology/plugin.py <<'EOF_LABSTEWARD_SYNOLOGY_PLUGIN'
+#!/usr/bin/env python3
+"""Fixed, read-only Synology DSM adapter for LABSteward."""
+
+from __future__ import annotations
+
+import http.client
+import json
+import re
+import ssl
+from pathlib import Path
+from typing import Any, Callable
+from urllib.parse import urlencode, urlsplit
+
+PLUGIN_ID = "synology"
+PLUGIN_VERSION = "0.1.0"
+MAX_RESPONSE_BYTES = 1024 * 1024
+REQUEST_TIMEOUT_SECONDS = 12
+SAFE_API_PATH = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.cgi$")
+SYSTEM_APIS = ("SYNO.API.Auth", "SYNO.Core.System", "SYNO.Core.System.Utilization")
+STORAGE_APIS = ("SYNO.API.Auth", "SYNO.Storage.CGI.Storage")
+
+
+class PluginError(Exception):
+    """A safe Synology error that may be returned to a caller."""
+
+
+def _bounded_text(value: object, *, maximum: int = 120) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = " ".join(value.split())
+    return value[:maximum] if value else None
+
+
+def _number(value: object, *, minimum: float = 0, maximum: float = 10**18) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    result = float(value)
+    return result if minimum <= result <= maximum else None
+
+
+def _integer(value: object, *, maximum: int = 10**18) -> int | None:
+    result = _number(value, maximum=maximum)
+    return int(result) if result is not None else None
+
+
+def _percent(value: object) -> float | None:
+    result = _number(value, maximum=100)
+    return round(result, 1) if result is not None else None
+
+
+def _first(mapping: object, *names: str) -> object:
+    if not isinstance(mapping, dict):
+        return None
+    for name in names:
+        if name in mapping:
+            return mapping[name]
+    return None
+
+
+def _size(mapping: object, *names: str) -> int | None:
+    direct = _first(mapping, *names)
+    value = _integer(direct)
+    if value is not None:
+        return value
+    nested = mapping.get("size") if isinstance(mapping, dict) else None
+    aliases = {
+        "total": ("total", "total_size", "size_total"),
+        "used": ("used", "used_size", "size_used"),
+    }
+    for label, candidates in aliases.items():
+        if any(name in names for name in candidates):
+            return _integer(_first(nested, label, *candidates))
+    return None
+
+
+def _usage_percent(total: int | None, used: int | None, explicit: object = None) -> float | None:
+    value = _percent(explicit)
+    if value is not None:
+        return value
+    if total and used is not None and used <= total:
+        return round((used / total) * 100, 1)
+    return None
+
+
+def _health(value: object) -> str:
+    normalized = str(value or "").lower()
+    if normalized in {"normal", "healthy", "optimal", "good", "1"}:
+        return "healthy"
+    if normalized in {"warning", "attention", "degraded", "repairing", "2"}:
+        return "warning"
+    if normalized in {"critical", "crashed", "failed", "error", "3", "4"}:
+        return "critical"
+    return "unknown"
+
+
+def _api_path(record: object) -> str:
+    path = record.get("path") if isinstance(record, dict) else None
+    if not isinstance(path, str) or not SAFE_API_PATH.fullmatch(path) or ".." in path:
+        raise PluginError("DSM advertised an unsafe API path")
+    return f"/webapi/{path}"
+
+
+def _api_version(record: object, *, maximum: int) -> int:
+    if not isinstance(record, dict):
+        raise PluginError("Required DSM API is unavailable")
+    minimum = record.get("minVersion")
+    supported = record.get("maxVersion")
+    if not isinstance(minimum, int) or not isinstance(supported, int):
+        raise PluginError("DSM advertised invalid API version metadata")
+    selected = min(maximum, supported)
+    if selected < minimum:
+        raise PluginError("Required DSM API version is unavailable")
+    return selected
+
+
+class DsmClient:
+    """HTTPS-only client exposing only the fixed DSM calls used by this plugin."""
+
+    def __init__(self, endpoint: str, *, ca_file: Path | None = None):
+        parsed = urlsplit(endpoint)
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise PluginError("Synology endpoint is invalid") from exc
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise PluginError("Synology endpoint must be an HTTPS origin")
+        try:
+            context = ssl.create_default_context(cafile=str(ca_file) if ca_file else None)
+        except (OSError, ssl.SSLError) as exc:
+            raise PluginError("Synology TLS trust is unavailable or invalid") from exc
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        self.connection = http.client.HTTPSConnection(
+            parsed.hostname,
+            port or 443,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+            context=context,
+        )
+
+    def close(self) -> None:
+        self.connection.close()
+
+    def request(self, path: str, parameters: dict[str, object]) -> dict[str, Any]:
+        if not path.startswith("/webapi/") or ".." in path:
+            raise PluginError("DSM API path is not allowed")
+        body = urlencode(parameters)
+        try:
+            self.connection.request(
+                "POST",
+                path,
+                body=body,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            response = self.connection.getresponse()
+            raw = response.read(MAX_RESPONSE_BYTES + 1)
+        except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+            raise PluginError("Unable to reach the Synology DSM API securely") from exc
+        if response.status != 200 or len(raw) > MAX_RESPONSE_BYTES:
+            raise PluginError("Synology DSM returned an invalid response")
+        try:
+            payload = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise PluginError("Synology DSM returned invalid JSON") from exc
+        if not isinstance(payload, dict) or payload.get("success") is not True:
+            raise PluginError("Synology DSM rejected the read-only request")
+        data = payload.get("data", {})
+        if not isinstance(data, dict):
+            raise PluginError("Synology DSM returned invalid result data")
+        return data
+
+    def api_info(self, names: tuple[str, ...]) -> dict[str, Any]:
+        return self.request(
+            "/webapi/entry.cgi",
+            {"api": "SYNO.API.Info", "version": 1, "method": "query", "query": ",".join(names)},
+        )
+
+    def login(self, api: object, username: str, password: str) -> tuple[str, str | None]:
+        data = self.request(
+            _api_path(api),
+            {
+                "api": "SYNO.API.Auth",
+                "version": _api_version(api, maximum=6),
+                "method": "login",
+                "account": username,
+                "passwd": password,
+                "session": "LABSteward",
+                "format": "sid",
+                "enable_syno_token": "yes",
+            },
+        )
+        sid = data.get("sid")
+        synotoken = data.get("synotoken")
+        if not isinstance(sid, str) or not sid or len(sid) > 512:
+            raise PluginError("Synology DSM login did not return a valid session")
+        return sid, synotoken if isinstance(synotoken, str) and len(synotoken) <= 512 else None
+
+    def logout(self, api: object, sid: str, synotoken: str | None) -> None:
+        parameters: dict[str, object] = {
+            "api": "SYNO.API.Auth",
+            "version": _api_version(api, maximum=6),
+            "method": "logout",
+            "session": "LABSteward",
+            "_sid": sid,
+        }
+        if synotoken:
+            parameters["SynoToken"] = synotoken
+        try:
+            self.request(_api_path(api), parameters)
+        except PluginError:
+            pass
+
+    def call(
+        self,
+        api_name: str,
+        api: object,
+        method: str,
+        sid: str,
+        synotoken: str | None,
+        *,
+        maximum_version: int,
+        parameters: dict[str, object] | None = None,
+    ) -> dict[str, Any]:
+        values: dict[str, object] = {
+            "api": api_name,
+            "version": _api_version(api, maximum=maximum_version),
+            "method": method,
+            "_sid": sid,
+        }
+        if synotoken:
+            values["SynoToken"] = synotoken
+        if parameters:
+            values.update(parameters)
+        return self.request(_api_path(api), values)
+
+
+def _credentials(value: object) -> tuple[str, str]:
+    if not isinstance(value, dict) or value.get("schema") != 1:
+        raise PluginError("Synology credentials are not configured")
+    username = value.get("username")
+    password = value.get("password")
+    if not isinstance(username, str) or not username or len(username) > 128:
+        raise PluginError("Synology credentials are not configured")
+    if not isinstance(password, str) or not password or len(password) > 1024:
+        raise PluginError("Synology credentials are not configured")
+    return username, password
+
+
+def _cpu_percent(utilization: object) -> float | None:
+    cpu = utilization.get("cpu") if isinstance(utilization, dict) else None
+    explicit = _first(cpu, "total_load", "usage", "load")
+    result = _percent(explicit)
+    if result is not None:
+        return result
+    if isinstance(cpu, dict):
+        parts = [_number(cpu.get(name), maximum=100) for name in ("user_load", "system_load", "other_load")]
+        if all(item is not None for item in parts):
+            return round(min(100.0, sum(item for item in parts if item is not None)), 1)
+    return None
+
+
+def _memory_percent(utilization: object) -> float | None:
+    memory = utilization.get("memory") if isinstance(utilization, dict) else None
+    explicit = _first(memory, "real_usage", "usage", "used_percent")
+    result = _percent(explicit)
+    if result is not None:
+        return result
+    total = _number(_first(memory, "total_real", "total"))
+    available = _number(_first(memory, "avail_real", "available"))
+    if total and available is not None and available <= total:
+        return round(((total - available) / total) * 100, 1)
+    return None
+
+
+def system_output(system: object, utilization: object) -> dict[str, Any]:
+    warning = _first(system, "sys_tempwarn", "temperature_warning") is True
+    return {
+        "status": "warning" if warning else _health(_first(system, "status", "health", "system_status")),
+        "model": _bounded_text(_first(system, "model", "model_name")),
+        "dsm_version": _bounded_text(_first(system, "firmware_ver", "version_string", "dsm_version")),
+        "uptime_seconds": _integer(_first(system, "up_time", "uptime")),
+        "temperature_c": _number(_first(system, "sys_temp", "temperature"), maximum=150),
+        "cpu_percent": _cpu_percent(utilization),
+        "memory_percent": _memory_percent(utilization),
+    }
+
+
+def _storage_item(item: object) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    total = _size(item, "total_size", "size_total", "total")
+    used = _size(item, "used_size", "size_used", "used")
+    return {
+        "id": _bounded_text(_first(item, "id", "volume_id", "pool_id"), maximum=64),
+        "status": _health(_first(item, "status", "health")),
+        "raid_type": _bounded_text(_first(item, "raidType", "raid_type", "type"), maximum=64),
+        "size_total_bytes": total,
+        "size_used_bytes": used,
+        "usage_percent": _usage_percent(total, used, _first(item, "used_percent", "usage")),
+    }
+
+
+def storage_output(data: object) -> dict[str, Any]:
+    pools_raw = _first(data, "storagePools", "storage_pools", "pools")
+    volumes_raw = _first(data, "volumes", "volume")
+    disks_raw = _first(data, "disks", "disk")
+    pools = [value for item in pools_raw if (value := _storage_item(item)) is not None] if isinstance(pools_raw, list) else []
+    volumes = [value for item in volumes_raw if (value := _storage_item(item)) is not None] if isinstance(volumes_raw, list) else []
+    disks = disks_raw if isinstance(disks_raw, list) else []
+    states = [_health(_first(item, "status", "health")) for item in disks if isinstance(item, dict)]
+    return {
+        "pools": pools[:32],
+        "volumes": volumes[:64],
+        "disks": {
+            "total": min(len(disks), 256),
+            "healthy": sum(state == "healthy" for state in states[:256]),
+            "warning": sum(state in {"warning", "critical"} for state in states[:256]),
+        },
+    }
+
+
+def execute(
+    action: str,
+    endpoint: str,
+    credentials: object,
+    *,
+    ca_file: Path | None = None,
+    client_factory: Callable[..., DsmClient] = DsmClient,
+) -> dict[str, Any]:
+    """Execute one fixed read-only action and return only allowlisted fields."""
+
+    if action not in {"synology.system.summary", "synology.storage.summary"}:
+        raise PluginError("Unknown Synology action")
+    username, password = _credentials(credentials)
+    client = client_factory(endpoint, ca_file=ca_file)
+    sid = ""
+    synotoken: str | None = None
+    auth_api: object = None
+    try:
+        names = SYSTEM_APIS if action == "synology.system.summary" else STORAGE_APIS
+        info = client.api_info(names)
+        auth_api = info.get("SYNO.API.Auth")
+        sid, synotoken = client.login(auth_api, username, password)
+        if action == "synology.system.summary":
+            system = client.call(
+                "SYNO.Core.System", info.get("SYNO.Core.System"), "info", sid, synotoken,
+                maximum_version=3,
+            )
+            utilization = client.call(
+                "SYNO.Core.System.Utilization",
+                info.get("SYNO.Core.System.Utilization"),
+                "get",
+                sid,
+                synotoken,
+                maximum_version=1,
+            )
+            return system_output(system, utilization)
+        storage = client.call(
+            "SYNO.Storage.CGI.Storage",
+            info.get("SYNO.Storage.CGI.Storage"),
+            "load_info",
+            sid,
+            synotoken,
+            maximum_version=1,
+        )
+        return storage_output(storage)
+    finally:
+        if sid and auth_api is not None:
+            client.logout(auth_api, sid, synotoken)
+        client.close()
+
+
+def tool_definitions() -> list[dict[str, Any]]:
+    annotations = {
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    }
+    server_input = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["server"],
+        "properties": {"server": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{0,63}$"}},
+    }
+    nullable_number = {"type": ["number", "null"]}
+    nullable_integer = {"type": ["integer", "null"]}
+    nullable_string = {"type": ["string", "null"]}
+    health = {"enum": ["healthy", "warning", "critical", "unknown"]}
+    system_output_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "status", "model", "dsm_version", "uptime_seconds", "temperature_c",
+            "cpu_percent", "memory_percent",
+        ],
+        "properties": {
+            "status": health,
+            "model": nullable_string,
+            "dsm_version": nullable_string,
+            "uptime_seconds": nullable_integer,
+            "temperature_c": nullable_number,
+            "cpu_percent": nullable_number,
+            "memory_percent": nullable_number,
+        },
+    }
+    storage_item_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "id", "status", "raid_type", "size_total_bytes", "size_used_bytes",
+            "usage_percent",
+        ],
+        "properties": {
+            "id": nullable_string,
+            "status": health,
+            "raid_type": nullable_string,
+            "size_total_bytes": nullable_integer,
+            "size_used_bytes": nullable_integer,
+            "usage_percent": nullable_number,
+        },
+    }
+    storage_output_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["pools", "volumes", "disks"],
+        "properties": {
+            "pools": {"type": "array", "maxItems": 32, "items": storage_item_schema},
+            "volumes": {"type": "array", "maxItems": 64, "items": storage_item_schema},
+            "disks": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["total", "healthy", "warning"],
+                "properties": {
+                    "total": {"type": "integer", "minimum": 0, "maximum": 256},
+                    "healthy": {"type": "integer", "minimum": 0, "maximum": 256},
+                    "warning": {"type": "integer", "minimum": 0, "maximum": 256},
+                },
+            },
+        },
+    }
+    return [
+        {
+            "name": "synology_system_summary",
+            "title": "Synology system summary",
+            "description": "Read sanitized DSM health and resource utilization for one assigned Synology server.",
+            "inputSchema": server_input,
+            "outputSchema": system_output_schema,
+            "annotations": annotations,
+        },
+        {
+            "name": "synology_storage_summary",
+            "title": "Synology storage summary",
+            "description": "Read sanitized storage pool, volume, capacity, and aggregate disk health for one assigned Synology server.",
+            "inputSchema": server_input,
+            "outputSchema": storage_output_schema,
+            "annotations": annotations,
+        },
+    ]
+EOF_LABSTEWARD_SYNOLOGY_PLUGIN
+chmod 0644 /opt/labsteward/plugins/synology/manifest.json /opt/labsteward/plugins/synology/plugin.py
 cat >/opt/labsteward/catalog/plugins.json <<'EOF_LABSTEWARD_CATALOG'
 {
   "schema": 1,
@@ -4599,10 +5501,17 @@ cat >/opt/labsteward/catalog/plugins.json <<'EOF_LABSTEWARD_CATALOG'
     {
       "id": "synology",
       "name": "Synology DSM",
-      "status": "planned",
-      "description": "Scoped DSM system, pool, volume, disk, snapshot, and job access.",
-      "permissions": {},
-      "permission_descriptions": {}
+      "status": "available",
+      "version": "0.1.0",
+      "description": "Read-only DSM system resources, storage capacity, and health summaries.",
+      "permissions": {
+        "storage.read": "read",
+        "system.read": "read"
+      },
+      "permission_descriptions": {
+        "storage.read": "Read storage pool, volume, capacity, and aggregate disk health.",
+        "system.read": "Read DSM system health and bounded resource utilization."
+      }
     },
     {
       "id": "unifi",

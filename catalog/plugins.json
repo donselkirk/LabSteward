@@ -12,10 +12,17 @@
     {
       "id": "synology",
       "name": "Synology DSM",
-      "status": "planned",
-      "description": "Scoped DSM system, pool, volume, disk, snapshot, and job access.",
-      "permissions": {},
-      "permission_descriptions": {}
+      "status": "available",
+      "version": "0.1.0",
+      "description": "Read-only DSM system resources, storage capacity, and health summaries.",
+      "permissions": {
+        "storage.read": "read",
+        "system.read": "read"
+      },
+      "permission_descriptions": {
+        "storage.read": "Read storage pool, volume, capacity, and aggregate disk health.",
+        "system.read": "Read DSM system health and bounded resource utilization."
+      }
     },
     {
       "id": "unifi",

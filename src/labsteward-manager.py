@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Root-only LabSteward appliance manager.
 
-This manager deliberately handles only non-secret registry data. Plugin-specific
-credential commands will own protected secret-file creation in later releases.
+This manager owns non-secret registry data and terminal-only plugin credential
+entry. Credentials remain in protected files inside the appliance.
 """
 
 from __future__ import annotations
@@ -43,6 +43,10 @@ MCP_FILE = Path(os.environ.get("LABSTEWARD_MCP_FILE", str(BASE_DIR / "lib/labste
 CLIENT_SECRETS_DIR = Path(
     os.environ.get("LABSTEWARD_CLIENT_SECRETS_DIR", "/etc/labsteward/secrets/clients")
 )
+SERVER_SECRETS_DIR = Path(
+    os.environ.get("LABSTEWARD_SERVER_SECRETS_DIR", "/etc/labsteward/secrets/servers")
+)
+PLUGINS_DIR = Path(os.environ.get("LABSTEWARD_PLUGINS_DIR", str(BASE_DIR / "plugins")))
 TRANSPORT_CONFIG_FILE = Path(
     os.environ.get("LABSTEWARD_TRANSPORT_CONFIG", "/etc/labsteward/transport.json")
 )
@@ -227,6 +231,40 @@ def declared_permissions(plugin: dict) -> set[str]:
     raw = plugin.get("permissions", {})
     values = raw if isinstance(raw, list) else raw.keys() if isinstance(raw, dict) else []
     return {require_identifier(str(item), "permission", PERMISSION) for item in values}
+
+
+def require_plugin_contract(plugin_id: str, plugin: dict, manifest: dict) -> None:
+    if (
+        manifest.get("schema") != 1
+        or manifest.get("id") != plugin_id
+        or manifest.get("version") != plugin.get("version")
+        or manifest.get("entrypoint") != "plugin.py"
+        or manifest.get("core_api") != 1
+    ):
+        raise UserError(f"Plugin package metadata is invalid: {plugin_id}")
+    manifest_permissions = manifest.get("permissions")
+    manifest_actions = manifest.get("actions")
+    if not isinstance(manifest_permissions, dict) or not isinstance(manifest_actions, dict):
+        raise UserError(f"Plugin package contract is invalid: {plugin_id}")
+    catalog_permissions = plugin.get("permissions", {})
+    if not isinstance(catalog_permissions, dict) or set(manifest_permissions) != set(catalog_permissions):
+        raise UserError(f"Plugin package permissions do not match the release catalog: {plugin_id}")
+    for permission, record in manifest_permissions.items():
+        if (
+            not isinstance(record, dict)
+            or record.get("level") != catalog_permissions.get(permission)
+            or record.get("description") != plugin.get("permission_descriptions", {}).get(permission)
+        ):
+            raise UserError(f"Plugin package permissions do not match the release catalog: {plugin_id}")
+    for action, record in manifest_actions.items():
+        if (
+            not isinstance(action, str)
+            or not isinstance(record, dict)
+            or record.get("permission") not in manifest_permissions
+            or record.get("level") != manifest_permissions[record["permission"]].get("level")
+            or not isinstance(record.get("tool"), str)
+        ):
+            raise UserError(f"Plugin package actions are invalid: {plugin_id}")
 
 
 def require_endpoint(value: str) -> str:
@@ -671,7 +709,20 @@ def command_plugin_install(args: argparse.Namespace) -> None:
         raise UserError("Plugin is not in the approved release catalog")
     if plugin.get("status") != "available":
         raise UserError(f"Plugin {plugin_id} is catalogued but not yet available")
-    raise UserError("Plugin package installation will be enabled with the first reviewed plugin release")
+    manifest_path = PLUGINS_DIR / plugin_id / "manifest.json"
+    entrypoint = PLUGINS_DIR / plugin_id / "plugin.py"
+    manifest = read_json(manifest_path)
+    require_plugin_contract(plugin_id, plugin, manifest)
+    try:
+        compile(entrypoint.read_text(encoding="utf-8"), str(entrypoint), "exec")
+    except (OSError, SyntaxError) as exc:
+        raise UserError(f"Plugin package entrypoint is invalid: {plugin_id}") from exc
+    config = load_config()
+    if plugin_id in config["plugins"]:
+        raise UserError(f"Plugin is already installed: {plugin_id}")
+    config["plugins"][plugin_id] = {"enabled": True, "version": plugin["version"]}
+    save_config(config)
+    print(f"Installed and enabled plugin {plugin_id} {plugin['version']} from the verified core release.")
 
 
 def command_plugin_remove(args: argparse.Namespace) -> None:
@@ -680,7 +731,11 @@ def command_plugin_remove(args: argparse.Namespace) -> None:
     users = [alias for alias, server in config["servers"].items() if server.get("plugin") == plugin_id]
     if users:
         raise UserError(f"Plugin {plugin_id} is still used by: {', '.join(sorted(users))}")
-    raise UserError("Plugin removal will be enabled with the first reviewed plugin release")
+    if plugin_id not in config["plugins"]:
+        raise UserError(f"Plugin is not installed: {plugin_id}")
+    del config["plugins"][plugin_id]
+    save_config(config)
+    print(f"Disabled and removed plugin registration {plugin_id}; verified release code remains immutable.")
 
 
 def command_server_list(_: argparse.Namespace) -> None:
@@ -718,6 +773,68 @@ def command_server_remove(args: argparse.Namespace) -> None:
     del config["servers"][alias]
     save_config(config)
     print(f"Removed server registration {alias} from {affected} client(s); inspect protected credentials separately.")
+
+
+def server_credential_path(alias: str) -> Path:
+    return SERVER_SECRETS_DIR / f"{alias}.json"
+
+
+def server_ca_path(alias: str) -> Path:
+    return SERVER_SECRETS_DIR / f"{alias}.ca.crt"
+
+
+def prepare_server_secrets_dir() -> None:
+    SERVER_SECRETS_DIR.mkdir(mode=0o2750, parents=True, exist_ok=True)
+    metadata = CONFIG_FILE.stat()
+    os.chmod(SERVER_SECRETS_DIR, 0o2750)
+    os.chown(SERVER_SECRETS_DIR, metadata.st_uid, metadata.st_gid)
+
+
+def command_server_credentials_set(args: argparse.Namespace) -> None:
+    alias = require_identifier(args.alias, "server alias", ALIAS)
+    server = load_config()["servers"].get(alias)
+    if not isinstance(server, dict):
+        raise UserError(f"Unknown server alias: {alias}")
+    if server.get("plugin") != "synology":
+        raise UserError("The selected server does not use the Synology plugin")
+    username = os.environ.get("LABSTEWARD_TEST_SERVER_USERNAME")
+    password = os.environ.get("LABSTEWARD_TEST_SERVER_PASSWORD")
+    if username is None:
+        username = input("DSM username: ").strip()
+    if password is None:
+        password = getpass.getpass("DSM password: ")
+    if not username or len(username) > 128 or any(ord(character) < 32 for character in username):
+        raise UserError("DSM username is invalid")
+    if not password or len(password) > 1024 or "\x00" in password:
+        raise UserError("DSM password is invalid")
+    prepare_server_secrets_dir()
+    if args.ca_file:
+        source = Path(args.ca_file)
+        try:
+            ssl.create_default_context(cafile=str(source))
+        except (OSError, ssl.SSLError) as exc:
+            raise UserError("DSM CA file is unavailable or invalid") from exc
+        install_tls_file(source, server_ca_path(alias), 0o640, service_group=True)
+    save_json(
+        server_credential_path(alias),
+        {"schema": 1, "username": username, "password": password},
+        0o640,
+    )
+    print(f"Stored protected Synology credentials for {alias}; no credential value was displayed.")
+
+
+def command_server_credentials_remove(args: argparse.Namespace) -> None:
+    alias = require_identifier(args.alias, "server alias", ALIAS)
+    if not args.yes:
+        raise UserError("Credential removal requires --yes")
+    removed = False
+    for path in (server_credential_path(alias), server_ca_path(alias)):
+        if path.exists():
+            path.unlink()
+            removed = True
+    if not removed:
+        raise UserError(f"No protected credentials are stored for {alias}")
+    print(f"Removed protected credentials and CA trust for {alias}.")
 
 
 def validation_errors(config: dict, catalog: dict[str, dict]) -> list[str]:
@@ -820,6 +937,30 @@ def validation_errors(config: dict, catalog: dict[str, dict]) -> list[str]:
             errors.append(f"installed plugin is absent from catalog: {plugin_id}")
         if not isinstance(installed, dict) or not isinstance(installed.get("enabled"), bool):
             errors.append(f"invalid installed plugin record: {plugin_id}")
+            continue
+        plugin = catalog.get(plugin_id, {})
+        if installed.get("version") != plugin.get("version"):
+            errors.append(f"installed plugin version does not match the catalog: {plugin_id}")
+        try:
+            require_plugin_contract(
+                plugin_id,
+                plugin,
+                read_json(PLUGINS_DIR / plugin_id / "manifest.json"),
+            )
+            entrypoint = PLUGINS_DIR / plugin_id / "plugin.py"
+            compile(entrypoint.read_text(encoding="utf-8"), str(entrypoint), "exec")
+        except (UserError, OSError, SyntaxError) as exc:
+            errors.append(str(exc))
+        for path in (
+            PLUGINS_DIR / plugin_id / "manifest.json",
+            PLUGINS_DIR / plugin_id / "plugin.py",
+        ):
+            if not path.is_file():
+                errors.append(f"installed plugin file is missing: {path}")
+                continue
+            security_error = validate_file_security(path, 0o644, BASE_DIR.stat().st_gid)
+            if security_error:
+                errors.append(security_error)
     for alias, server in config["servers"].items():
         if not isinstance(server, dict):
             errors.append(f"invalid server record: {alias}")
@@ -834,6 +975,11 @@ def validation_errors(config: dict, catalog: dict[str, dict]) -> list[str]:
         if plugin_id not in config["plugins"]:
             errors.append(f"server {alias} uses an uninstalled plugin: {plugin_id}")
             continue
+        for path in (server_credential_path(alias), server_ca_path(alias)):
+            if path.exists():
+                security_error = validate_file_security(path, 0o640, CONFIG_FILE.stat().st_gid)
+                if security_error:
+                    errors.append(security_error)
     for client_id, client in config["clients"].items():
         try:
             require_identifier(client_id, "client ID", IDENTIFIER)
@@ -943,7 +1089,8 @@ def command_action_run(args: argparse.Namespace) -> None:
     finally:
         sys.path.pop(0)
     try:
-        result = module.dispatch_action(args.action, {})
+        arguments = {} if args.action == "core.status" else {"server": args.server}
+        result = module.dispatch_action(args.action, arguments)
     except module.DispatchError as exc:
         raise UserError(exc.message) from exc
     print(json.dumps(result, indent=2, sort_keys=True))
@@ -1391,7 +1538,11 @@ def parser() -> argparse.ArgumentParser:
     action = commands.add_parser("action")
     action_commands = action.add_subparsers(dest="action_command", required=True)
     run_action = action_commands.add_parser("run")
-    run_action.add_argument("action", choices=["core.status"])
+    run_action.add_argument(
+        "action",
+        choices=["core.status", "synology.system.summary", "synology.storage.summary"],
+    )
+    run_action.add_argument("--server")
     run_action.set_defaults(handler=command_action_run)
 
     transport = commands.add_parser("transport")
@@ -1468,6 +1619,18 @@ def parser() -> argparse.ArgumentParser:
     remove_server.add_argument("alias")
     remove_server.add_argument("--yes", action="store_true")
     remove_server.set_defaults(handler=command_server_remove)
+    credentials = server_commands.add_parser("credentials")
+    credential_commands = credentials.add_subparsers(
+        dest="server_credential_command", required=True
+    )
+    set_credentials = credential_commands.add_parser("set")
+    set_credentials.add_argument("alias")
+    set_credentials.add_argument("--ca-file")
+    set_credentials.set_defaults(handler=command_server_credentials_set)
+    remove_credentials = credential_commands.add_parser("remove")
+    remove_credentials.add_argument("alias")
+    remove_credentials.add_argument("--yes", action="store_true")
+    remove_credentials.set_defaults(handler=command_server_credentials_remove)
 
     client = commands.add_parser("client", aliases=["clients"])
     client_commands = client.add_subparsers(dest="client_command", required=True)

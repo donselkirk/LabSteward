@@ -34,6 +34,8 @@ install -m 0644 "${project_root}/src/labsteward_broker.py" "${output}/labsteward
 install -m 0644 "${project_root}/src/labsteward.service" "${output}/labsteward-core.service"
 install -m 0644 "${project_root}/src/labsteward-admin.service" "${output}/labsteward-admin.service"
 install -m 0644 "${project_root}/src/labsteward-broker.service" "${output}/labsteward-broker.service"
+install -m 0644 "${project_root}/plugins/synology/plugin.py" "${output}/synology-plugin.py"
+install -m 0644 "${project_root}/plugins/synology/manifest.json" "${output}/synology-manifest.json"
 install -m 0644 "${project_root}/catalog/plugins.json" "${output}/plugins.json"
 install -m 0644 "${project_root}/schemas/config.schema.json" "${output}/config.schema.json"
 install -m 0644 "${project_root}/release/COMPATIBILITY" "${output}/COMPATIBILITY"
@@ -46,6 +48,7 @@ done
     error_handler.func labsteward-admin.py labsteward-admin.service labsteward-broker.py \
     labsteward-broker.service labsteward-core.py labsteward-ct.sh labsteward-install.sh \
     labsteward-mcp.py labsteward-sanitize.py labsteward-core.service labsteward.sh \
-    install.func plugins.json self-update.sh stewctl tools.func >SHA256SUMS
+    install.func plugins.json self-update.sh stewctl synology-manifest.json \
+    synology-plugin.py tools.func >SHA256SUMS
   sha256sum -c SHA256SUMS >/dev/null
 )

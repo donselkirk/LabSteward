@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "id": "synology",
+  "name": "Synology DSM",
+  "version": "0.1.0",
+  "core_api": 1,
+  "entrypoint": "plugin.py",
+  "permissions": {
+    "system.read": {
+      "level": "read",
+      "description": "Read DSM system health and bounded resource utilization."
+    },
+    "storage.read": {
+      "level": "read",
+      "description": "Read storage pool, volume, capacity, and aggregate disk health."
+    }
+  },
+  "actions": {
+    "synology.system.summary": {
+      "tool": "synology_system_summary",
+      "permission": "system.read",
+      "level": "read"
+    },
+    "synology.storage.summary": {
+      "tool": "synology_storage_summary",
+      "permission": "storage.read",
+      "level": "read"
+    }
+  }
+}

@@ -16,17 +16,19 @@ account, configures source networks, and enables both administrator services.
 - Servers is a separate page for registration, plugin-specific write-only access
   configuration, and removal. Removing a server also removes it from every client.
 - Plugins is a separate page showing the release catalogue, installed state,
-  declared permission vocabulary, and descriptions. Installation remains
-  unavailable while every catalogue entry is `planned`.
+  declared permission vocabulary, descriptions, and fixed install/remove actions.
+  Synology is available; Proxmox and UniFi remain planned. A plugin cannot be
+  removed while a registered server uses it.
 - Revoking a client immediately invalidates its tokens and removes it from the
   registry and client list. A hidden non-secret generation tombstone prevents an
   old refresh token from becoming valid if the same client name is later approved.
 - The broker still rejects duplicate assignments, dangling grants, and cross-plugin
   permissions regardless of what a browser submits.
 
-Credential forms are deliberately absent until each plugin defines and tests
-its own write-only credential schema. No administrator response may retrieve a
-stored server credential.
+Credential forms are deliberately absent. For a Synology server, Configure
+access displays the exact `stewctl server credentials set` command to run at the
+appliance terminal. No browser request or administrator response accepts or
+retrieves a stored server credential.
 
 ## Authentication and recovery
 

@@ -51,81 +51,69 @@ TOKEN_VALUE = re.compile(r"^ls[acr]_[A-Za-z0-9_-]{43}$")
 BRAND_MARK_PNG = base64.b64decode(
 (
     "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"
-    "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"
+    "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"
+    "RK5CYII="
 )
 )
+
+
+
 
 
 class AdminError(Exception):
@@ -401,7 +389,7 @@ class AdminServer(ThreadingHTTPServer):
 STYLE = """
 :root{color-scheme:dark;--bg:#0b1220;--panel:#131d2f;--line:#2a3850;--text:#e9eef7;--muted:#9aabc1;--accent:#6ee7b7;--danger:#fb7185}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px system-ui,sans-serif}main{max-width:1100px;margin:0 auto;padding:32px 20px}h1,h2{margin:.2em 0 .7em}h3,h4{margin:.4em 0 .7em}p{line-height:1.5}.muted{color:var(--muted)}
-nav,.client-head,.row-actions,.page-tabs,.brand,.login-brand{display:flex;justify-content:space-between;align-items:center;gap:10px}nav{margin-bottom:14px}.brand,.login-brand{justify-content:flex-start}.brand img{width:42px;height:42px}.brand h1,.login-brand h1{margin:0}.login-brand img{width:52px;height:52px}.page-tabs{justify-content:flex-start;margin-bottom:24px;border-bottom:1px solid var(--line)}.page-tabs a{padding:10px 14px;text-decoration:none;color:var(--muted);border-bottom:2px solid transparent}.page-tabs a.active{color:var(--text);border-color:var(--accent)}
+nav,.client-head,.row-actions,.page-tabs,.brand,.login-brand{display:flex;justify-content:space-between;align-items:center;gap:10px}nav{margin-bottom:14px}.brand,.login-brand{justify-content:flex-start}.brand img{width:42px;height:42px}.brand h1,.login-brand h1{margin:0;font-family:Georgia,'Times New Roman',serif;font-weight:700;letter-spacing:.01em}.brand h1{font-size:42px;line-height:1}.login-brand h1{font-size:36px;line-height:1}.login-brand img{width:52px;height:52px}.page-tabs{justify-content:flex-start;margin-bottom:24px;border-bottom:1px solid var(--line)}.page-tabs a{padding:10px 14px;text-decoration:none;color:var(--muted);border-bottom:2px solid transparent}.page-tabs a.active{color:var(--text);border-color:var(--accent)}
 .card,section,.client-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin:14px 0}.client-card{background:#101a2b}.client-settings{display:grid;grid-template-columns:minmax(250px,1fr) auto;gap:14px;align-items:end}.row-actions{justify-content:flex-end;white-space:nowrap}
 .server-access{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#0d1728}.access-row+.access-row{border-top:1px solid var(--line)}.access-row summary{display:grid;grid-template-columns:minmax(180px,1fr) auto auto;gap:14px;align-items:start;padding:13px 14px;cursor:pointer;list-style:none}.access-row summary::-webkit-details-marker{display:none}.collapse-icon{display:inline-block;width:9px;height:9px;border-right:2px solid var(--accent);border-bottom:2px solid var(--accent);transform:rotate(45deg);transition:transform .15s ease;margin:2px 4px 0}.access-row[open] .collapse-icon{transform:rotate(225deg);margin-top:7px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.access-body{border-top:1px solid var(--line);padding:14px}.permission-list{display:grid;gap:0;margin-bottom:14px}.permission-control{display:grid;grid-template-columns:minmax(220px,1fr) auto;align-items:start;gap:16px;padding:10px 0}.permission-control+.permission-control{border-top:1px solid var(--line)}.permission-name{font-weight:600}.permission-description{display:block;color:var(--muted);font-size:13px;margin-top:3px}.help{display:inline-grid;place-items:center;width:17px;height:17px;border:1px solid var(--line);border-radius:50%;font-size:11px;color:var(--muted);cursor:help;margin-left:5px}.level-toggle{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}.level-choice{display:inline-flex;align-items:center;margin:0;padding:7px 11px;background:#111d31;cursor:pointer}.level-choice+.level-choice{border-left:1px solid var(--line)}.level-choice:has(input:checked){background:#1d6f58;color:#fff}.level-choice input{position:absolute;opacity:0;pointer-events:none}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid var(--line);padding:10px 8px;vertical-align:top}input,select,button,.button-link{font:inherit;border-radius:7px;border:1px solid var(--line);padding:8px 10px;background:#0d1728;color:var(--text)}button{cursor:pointer;background:#1d6f58;border-color:#2ca47e}button.secondary{background:#18243a;border-color:var(--line)}button.danger{background:#7f1d32;border-color:#be3453}button:disabled{cursor:not-allowed;opacity:.55}.button-link{display:inline-block;text-decoration:none;background:#18243a}form.inline{display:inline-flex;gap:8px;flex-wrap:wrap}.notice{border-left:4px solid var(--accent);padding:10px 14px;background:#10251f}.error{border-left-color:var(--danger);background:#2b1118}.pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:3px 8px;margin:2px}.login{max-width:430px;margin:10vh auto}label{display:block;margin:12px 0 5px}a{color:var(--accent)}
@@ -464,7 +452,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         page = (
             "<!doctype html><html lang=en><head><meta charset=utf-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
-            f"<title>{html.escape(title)} · LabSteward</title>"
+            f"<title>{html.escape(title)} · LABSteward</title>"
             "<link rel=icon type=image/png href=/favicon.png>"
             "<link rel=stylesheet href=/admin/style.css></head><body><main>"
             f"{content}</main></body></html>"
@@ -678,7 +666,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         self.send_html(
             200,
             "Administrator sign in",
-            "<section class=login><div class=login-brand><img src=/favicon.png alt=''><h1>LabSteward</h1></div><p class=muted>Administrator sign in</p>"
+            "<section class=login><div class=login-brand><img src=/favicon.png alt=''><h1>LABSteward</h1></div><p class=muted>Administrator sign in</p>"
             f"{error_html}<form method=post action=/admin/login>{transaction_field}"
             "<label for=username>Username</label><input id=username name=username required autocomplete=username>"
             "<label for=password>Password</label><input id=password name=password type=password required autocomplete=current-password>"
@@ -787,7 +775,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             return "".join(controls) or "<span class=muted>No permissions are declared by this plugin.</span>"
 
         navigation = (
-            "<nav><div class=brand><img src=/favicon.png alt=''><div><h1>LabSteward</h1><span class=muted>Administration</span></div></div>"
+            "<nav><div class=brand><img src=/favicon.png alt=''><h1>LABSteward</h1></div>"
             "<form method=post action=/admin/logout>"
             f"<input type=hidden name=csrf value='{csrf}'><button type=submit>Sign out</button></form></nav>"
             "<div class=page-tabs>"
@@ -881,10 +869,19 @@ class AdminHandler(BaseHTTPRequestHandler):
             configuration = ""
             if selected_server in servers:
                 selected = servers[selected_server]
+                plugin_id = str(selected.get("plugin", ""))
+                access_help = (
+                    "<p class=notice>Configure a least-privilege DSM account from the LabSteward terminal with "
+                    f"<code>stewctl server credentials set {html.escape(selected_server)}</code>. "
+                    "Add <code>--ca-file /path/to/dsm-ca.crt</code> when DSM uses a private CA. "
+                    "Credential values are never accepted or displayed by this page.</p>"
+                    if plugin_id == "synology"
+                    else "<p class=notice>This plugin has not released its credential setup yet.</p>"
+                )
                 configuration = (
                     f"<section><h2>Configure {html.escape(selected_server)} access</h2>"
-                    f"<p class=muted>{html.escape(str(selected.get('plugin','')))} at {html.escape(str(selected.get('endpoint','')))}</p>"
-                    "<p class=notice>This plugin has not released its write-only credential fields yet. Access setup will appear here with the reviewed plugin credential schema.</p></section>"
+                    f"<p class=muted>{html.escape(plugin_id)} at {html.escape(str(selected.get('endpoint','')))}</p>"
+                    f"{access_help}</section>"
                 )
             content = (
                 "<section><h2>Servers</h2><p class=muted>Register each server once. Removing it automatically removes it from every client.</p>"
@@ -910,18 +907,32 @@ class AdminHandler(BaseHTTPRequestHandler):
                     f"<span class=pill title='{html.escape(str(descriptions.get(name, 'Plugin-defined capability.')))}'>{html.escape(name)}</span>"
                     for name in permission_names(plugin_id)
                 ) or "<span class=muted>None released</span>"
+                if plugin_id in installed:
+                    action = (
+                        "<form class=inline method=post action=/admin/plugin/remove>"
+                        f"<input type=hidden name=csrf value='{csrf}'><input type=hidden name=plugin value='{html.escape(plugin_id)}'>"
+                        "<button class=danger type=submit>Remove</button></form>"
+                    )
+                elif plugin.get("status") == "available":
+                    action = (
+                        "<form class=inline method=post action=/admin/plugin/install>"
+                        f"<input type=hidden name=csrf value='{csrf}'><input type=hidden name=plugin value='{html.escape(plugin_id)}'>"
+                        "<button type=submit>Install</button></form>"
+                    )
+                else:
+                    action = "<span class=muted>Not available</span>"
                 plugin_rows.append(
-                    f"<tr><td>{html.escape(str(plugin.get('name', plugin_id)))}</td><td>{html.escape(status)}</td><td>{permissions}</td></tr>"
+                    f"<tr><td>{html.escape(str(plugin.get('name', plugin_id)))}</td><td>{html.escape(status)}</td><td>{permissions}</td><td>{action}</td></tr>"
                 )
             content = (
                 "<section><h2>Plugins</h2><p class=muted>Plugins define available capabilities and their descriptions.</p>"
-                "<table><thead><tr><th>Plugin</th><th>Status</th><th>Permissions</th></tr></thead><tbody>"
-                + ("".join(plugin_rows) or "<tr><td colspan=3>No catalogue entries</td></tr>")
+                "<table><thead><tr><th>Plugin</th><th>Status</th><th>Permissions</th><th>Actions</th></tr></thead><tbody>"
+                + ("".join(plugin_rows) or "<tr><td colspan=4>No catalogue entries</td></tr>")
                 + "</tbody></table></section>"
             )
         else:
             raise AdminError("Unknown administration page")
-        self.send_html(200, f"LabSteward {page.title()}", navigation + notice_html + content)
+        self.send_html(200, f"LABSteward {page.title()}", navigation + notice_html + content)
 
     def admin_operation(self, path: str) -> None:
         form = self.read_form()
@@ -989,6 +1000,12 @@ class AdminHandler(BaseHTTPRequestHandler):
                 "Server removed from every client. Protected credentials were not deleted.",
                 page="servers",
             )
+        elif path == "/admin/plugin/install":
+            broker_call("plugin.install", {"plugin": form.get("plugin", "")})
+            self.dashboard("Plugin installed and enabled from the verified release package.", page="plugins")
+        elif path == "/admin/plugin/remove":
+            broker_call("plugin.remove", {"plugin": form.get("plugin", "")})
+            self.dashboard("Plugin disabled; its immutable release code was retained.", page="plugins")
         else:
             raise AdminError("Unsupported administration operation")
 
@@ -1084,7 +1101,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             200,
             "Trust client",
             "<section class=login><h1>Trust this MCP client?</h1>"
-            f"<p><strong>{html.escape(str(transaction['client_name']))}</strong> is requesting access to LabSteward.</p>"
+            f"<p><strong>{html.escape(str(transaction['client_name']))}</strong> is requesting access to LABSteward.</p>"
             "<p class=notice>Approval grants only the sanitized built-in health check. It does not grant access to any server or plugin.</p>"
             f"<p>Observed source: <code>{html.escape(self.source)}</code><br>Callback: <code>{html.escape(str(transaction['redirect_uri']))}</code></p>"
             "<form method=post action=/authorize>"

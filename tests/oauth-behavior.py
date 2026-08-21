@@ -118,6 +118,12 @@ def main() -> int:
         broker_socket = fixture / "broker.sock"
         mcp_config = fixture / "transport.json"
         admin_config = fixture / "admin.json"
+        plugins_dir = fixture / "plugins"
+        (plugins_dir / "synology").mkdir(parents=True)
+        for name in ("manifest.json", "plugin.py"):
+            destination = plugins_dir / "synology" / name
+            destination.write_bytes((PROJECT_ROOT / "plugins/synology" / name).read_bytes())
+            destination.chmod(0o644)
         write_json(
             config_file,
             {
@@ -152,7 +158,18 @@ def main() -> int:
                             "audit.node": "Inspect or manage Proxmox nodes.",
                             "audit.storage": "Inspect or manage Proxmox storage.",
                         },
-                    }
+                    },
+                    {
+                        "id": "synology",
+                        "name": "Synology DSM",
+                        "status": "available",
+                        "version": "0.1.0",
+                        "permissions": {"storage.read": "read", "system.read": "read"},
+                        "permission_descriptions": {
+                            "storage.read": "Read storage pool, volume, capacity, and aggregate disk health.",
+                            "system.read": "Read DSM system health and bounded resource utilization.",
+                        },
+                    },
                 ],
             },
             0o644,
@@ -203,6 +220,7 @@ def main() -> int:
                 "LABSTEWARD_CLIENT_SECRETS_DIR": str(fixture / "legacy-clients"),
                 "LABSTEWARD_OAUTH_TOKEN_FILE": str(oauth_tokens),
                 "LABSTEWARD_BROKER_SOCKET": str(broker_socket),
+                "LABSTEWARD_PLUGINS_DIR": str(plugins_dir),
             }
         )
         broker_environment = {**common, "LABSTEWARD_BROKER_ALLOW_CURRENT_UID": "1"}
@@ -378,7 +396,13 @@ def main() -> int:
                 admin_port, context, "GET", "/admin", headers={"Cookie": cookie},
             )
             require(status == 200 and b"Codex Desktop" in body, "dashboard must list the approved client")
-            require(b"class=brand" in body and b"src=/favicon.png" in body, "dashboard header must show the logo")
+            require(
+                b"class=brand" in body
+                and b"src=/favicon.png" in body
+                and b"<h1>LABSteward</h1>" in body
+                and b"Administration" not in body,
+                "dashboard header must show only the logo and title",
+            )
             require(b"No servers have been added" in body, "new clients must not list every registered server")
             require(b"Add server" in body and b"pve-test" in body, "client card must offer explicit server assignment")
             require(b"<h2>Servers" not in body and b"<h2>Plugins" not in body, "main page must focus on clients")
@@ -390,6 +414,19 @@ def main() -> int:
                 admin_port, context, "GET", "/admin/plugins", headers={"Cookie": cookie},
             )
             require(status == 200 and b"Proxmox VE" in plugin_page, "plugins must have a separate page")
+            require(b"Synology DSM" in plugin_page and b">Install</button>" in plugin_page, "available Synology plugin must be installable")
+            plugin_csrf = re.search(rb'name=csrf value=\'([^\']+)\'', plugin_page)
+            install_plugin = form_body({"csrf": plugin_csrf.group(1).decode(), "plugin": "synology"})
+            status, _headers, plugin_page = request(
+                admin_port, context, "POST", "/admin/plugin/install", body=install_plugin,
+                headers={"Content-Type": "application/x-www-form-urlencoded", "Origin": issuer, "Cookie": cookie},
+            )
+            require(status == 200 and b"installed 0.1.0" in plugin_page, "verified Synology plugin install must succeed")
+            require(
+                json.loads(config_file.read_text(encoding="utf-8"))["plugins"]["synology"]
+                == {"enabled": True, "version": "0.1.0"},
+                "plugin install must register the exact released version",
+            )
             dashboard_csrf = re.search(rb'name=csrf value=\'([^\']+)\'', body)
             assignment = form_body(
                 {"csrf": dashboard_csrf.group(1).decode(), "client": "desktop", "server": "pve-test"}

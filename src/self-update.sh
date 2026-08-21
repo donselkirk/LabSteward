@@ -9,6 +9,7 @@ readonly CORE_PATH="${LABSTEWARD_CORE_FILE:-${BASE_DIR}/lib/labsteward_core.py}"
 readonly MCP_PATH="${LABSTEWARD_MCP_FILE:-${BASE_DIR}/lib/labsteward_mcp.py}"
 readonly ADMIN_PATH="${LABSTEWARD_ADMIN_FILE:-${BASE_DIR}/lib/labsteward_admin.py}"
 readonly BROKER_PATH="${LABSTEWARD_BROKER_FILE:-${BASE_DIR}/lib/labsteward_broker.py}"
+readonly SYN_PLUGIN_DIR="${LABSTEWARD_SYNOLOGY_PLUGIN_DIR:-${BASE_DIR}/plugins/synology}"
 readonly SYSTEMD_UNIT_PATH="${LABSTEWARD_SYSTEMD_UNIT:-/etc/systemd/system/labsteward.service}"
 readonly ADMIN_SYSTEMD_UNIT_PATH="${LABSTEWARD_ADMIN_SYSTEMD_UNIT:-/etc/systemd/system/labsteward-admin.service}"
 readonly BROKER_SYSTEMD_UNIT_PATH="${LABSTEWARD_BROKER_SYSTEMD_UNIT:-/etc/systemd/system/labsteward-broker.service}"
@@ -42,6 +43,7 @@ update_url="${update_url%/}"
 stage="$(mktemp -d)"
 backup=""
 runtime_bundle=0
+synology_bundle=0
 service_was_active=0
 cleanup() {
   rm -rf "$stage"
@@ -97,6 +99,7 @@ required_assets=(stewctl self-update.sh labsteward-sanitize.py plugins.json conf
 optional_runtime_assets=(labsteward-core.py labsteward-mcp.py labsteward-admin.py \
   labsteward-broker.py labsteward-core.service labsteward-admin.service \
   labsteward-broker.service)
+optional_synology_assets=(synology-plugin.py synology-manifest.json)
 for asset in "${required_assets[@]}"; do
   grep -q " ${asset}$" "${stage}/SHA256SUMS" || {
     echo "LabSteward release is missing required checksum metadata for ${asset}." >&2
@@ -117,6 +120,22 @@ fi
 if ((optional_count)); then
   runtime_bundle=1
   for asset in "${optional_runtime_assets[@]}"; do
+    download_asset "${asset_url}/${asset}" "${stage}/${asset}" "$asset"
+  done
+fi
+synology_count=0
+for asset in "${optional_synology_assets[@]}"; do
+  if grep -q " ${asset}$" "${stage}/SHA256SUMS"; then
+    synology_count=$((synology_count + 1))
+  fi
+done
+if ((synology_count != 0 && synology_count != ${#optional_synology_assets[@]})); then
+  echo "LabSteward release contains an incomplete Synology plugin bundle." >&2
+  exit 1
+fi
+if ((synology_count)); then
+  synology_bundle=1
+  for asset in "${optional_synology_assets[@]}"; do
     download_asset "${asset_url}/${asset}" "${stage}/${asset}" "$asset"
   done
 fi
@@ -169,6 +188,16 @@ rollback() {
       "$SYSTEMCTL" restart labsteward.service >/dev/null 2>&1 || true
     fi
   fi
+  if ((synology_bundle)); then
+    for item in synology-plugin.py synology-manifest.json; do
+      destination="${SYN_PLUGIN_DIR}/${item#synology-}"
+      if [[ -e "${backup}/${item}" ]]; then
+        cp -a "${backup}/${item}" "$destination"
+      else
+        rm -f "$destination"
+      fi
+    done
+  fi
   [[ ! -e "${backup}/plugins.json" ]] || cp -a "${backup}/plugins.json" "${BASE_DIR}/catalog/plugins.json"
   [[ ! -e "${backup}/config.schema.json" ]] || cp -a "${backup}/config.schema.json" "${BASE_DIR}/schemas/config.schema.json"
   [[ ! -e "${backup}/VERSION" ]] || cp -a "${backup}/VERSION" "$VERSION_FILE"
@@ -195,6 +224,11 @@ if ((runtime_bundle)); then
   [[ ! -e "$ADMIN_SYSTEMD_UNIT_PATH" ]] || cp -a "$ADMIN_SYSTEMD_UNIT_PATH" "${backup}/labsteward-admin.service"
   [[ ! -e "$BROKER_SYSTEMD_UNIT_PATH" ]] || cp -a "$BROKER_SYSTEMD_UNIT_PATH" "${backup}/labsteward-broker.service"
 fi
+if ((synology_bundle)); then
+  install -d -m 0755 "$SYN_PLUGIN_DIR"
+  [[ ! -e "${SYN_PLUGIN_DIR}/plugin.py" ]] || cp -a "${SYN_PLUGIN_DIR}/plugin.py" "${backup}/synology-plugin.py"
+  [[ ! -e "${SYN_PLUGIN_DIR}/manifest.json" ]] || cp -a "${SYN_PLUGIN_DIR}/manifest.json" "${backup}/synology-manifest.json"
+fi
 [[ ! -e "${BASE_DIR}/catalog/plugins.json" ]] || cp -a "${BASE_DIR}/catalog/plugins.json" "${backup}/plugins.json"
 [[ ! -e "${BASE_DIR}/schemas/config.schema.json" ]] || cp -a "${BASE_DIR}/schemas/config.schema.json" "${backup}/config.schema.json"
 [[ ! -e "$VERSION_FILE" ]] || cp -a "$VERSION_FILE" "${backup}/VERSION"
@@ -219,6 +253,10 @@ if ((runtime_bundle)); then
   install -D -m 0644 "${stage}/labsteward-admin.service" "$ADMIN_SYSTEMD_UNIT_PATH"
   install -D -m 0644 "${stage}/labsteward-broker.service" "$BROKER_SYSTEMD_UNIT_PATH"
   "$SYSTEMCTL" daemon-reload
+fi
+if ((synology_bundle)); then
+  install -m 0644 "${stage}/synology-plugin.py" "${SYN_PLUGIN_DIR}/plugin.py"
+  install -m 0644 "${stage}/synology-manifest.json" "${SYN_PLUGIN_DIR}/manifest.json"
 fi
 install -m 0644 "${stage}/plugins.json" "${BASE_DIR}/catalog/plugins.json"
 install -m 0644 "${stage}/config.schema.json" "${BASE_DIR}/schemas/config.schema.json"

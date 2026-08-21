@@ -125,13 +125,20 @@ therefore produce a clear unavailable-source result and require a reviewed
 manual upgrade. This avoids placing a repository credential in the appliance;
 normal self-updates become available when the release source is public.
 
-## Planned plugin package contract
+## Plugin package contract
 
-Every plugin release will contain a manifest declaring its ID, version, core
-API range, server configuration schema, named capabilities with human-readable
-descriptions, action access levels, tool names, and runtime entry point. The core
-installer will reject unknown files, unsafe paths, incompatible versions,
-undeclared permissions, and checksum failures.
+Every plugin release contains a manifest declaring its ID, version, core API,
+named capabilities with human-readable descriptions, action access levels, tool
+names, and runtime entry point. The core installer rejects incompatible metadata,
+catalogue mismatches, undeclared permissions, invalid entrypoints, and checksum
+failures.
+
+The initial Synology package implements this contract with two read-only
+capabilities: `system.read` and `storage.read`. Its two tools accept only a
+registered server alias. The core resolves that alias to the immutable endpoint,
+checks the calling client's per-server grant, loads protected credentials, and
+applies the shared sanitizer after the plugin's output allowlist. No caller can
+supply an upstream URL, DSM API name, method, path, or arbitrary parameters.
 
 Plugins are code and therefore share the gateway's trust boundary. Process
 isolation between plugins may be added later, but it must not be presented as
