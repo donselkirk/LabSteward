@@ -10,6 +10,10 @@ output="${2:-${project_root}/dist}"
 }
 
 mkdir -p "$output"
+if [[ -n "$(find "$output" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+  echo "Release output directory must be empty: $output" >&2
+  exit 1
+fi
 for helper in build.func install.func tools.func core.func api.func error_handler.func; do
   [[ -s "${project_root}/vendor/community-scripts/misc/${helper}" ]] || {
     echo "Missing reviewed helper ${helper}; run: bash tools/fetch-community-helpers.sh" >&2
@@ -25,7 +29,11 @@ install -m 0755 "${project_root}/src/self-update.sh" "${output}/self-update.sh"
 install -m 0644 "${project_root}/src/labsteward_sanitize.py" "${output}/labsteward-sanitize.py"
 install -m 0644 "${project_root}/src/labsteward_core.py" "${output}/labsteward-core.py"
 install -m 0644 "${project_root}/src/labsteward_mcp.py" "${output}/labsteward-mcp.py"
-install -m 0644 "${project_root}/src/labsteward.service" "${output}/labsteward.service"
+install -m 0644 "${project_root}/src/labsteward_admin.py" "${output}/labsteward-admin.py"
+install -m 0644 "${project_root}/src/labsteward_broker.py" "${output}/labsteward-broker.py"
+install -m 0644 "${project_root}/src/labsteward.service" "${output}/labsteward-core.service"
+install -m 0644 "${project_root}/src/labsteward-admin.service" "${output}/labsteward-admin.service"
+install -m 0644 "${project_root}/src/labsteward-broker.service" "${output}/labsteward-broker.service"
 install -m 0644 "${project_root}/catalog/plugins.json" "${output}/plugins.json"
 install -m 0644 "${project_root}/schemas/config.schema.json" "${output}/config.schema.json"
 install -m 0644 "${project_root}/release/COMPATIBILITY" "${output}/COMPATIBILITY"
@@ -35,8 +43,9 @@ done
 (
   cd "$output"
   sha256sum VERSION COMPATIBILITY api.func build.func config.schema.json core.func \
-    error_handler.func labsteward-core.py labsteward-ct.sh labsteward-install.sh \
-    labsteward-mcp.py labsteward-sanitize.py labsteward.service labsteward.sh \
+    error_handler.func labsteward-admin.py labsteward-admin.service labsteward-broker.py \
+    labsteward-broker.service labsteward-core.py labsteward-ct.sh labsteward-install.sh \
+    labsteward-mcp.py labsteward-sanitize.py labsteward-core.service labsteward.sh \
     install.func plugins.json self-update.sh stewctl tools.func >SHA256SUMS
   sha256sum -c SHA256SUMS >/dev/null
 )

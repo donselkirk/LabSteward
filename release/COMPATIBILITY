@@ -1,2 +1,4 @@
 schema=1
-minimum_direct_version=v0.1.0
+minimum_direct_version=v0.1.3
+bridge_version=v0.1.3
+bridge_source_commit=cde3e95fbeba61351469d88559258a43ba267db9

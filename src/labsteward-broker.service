@@ -1,0 +1,43 @@
+[Unit]
+Description=LabSteward fixed-operation administration broker
+Documentation=https://github.com/donselkirk/LabSteward
+After=local-fs.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /opt/labsteward/lib/labsteward_broker.py --socket /run/labsteward/admin-broker.sock
+Restart=on-failure
+RestartSec=5s
+RuntimeDirectory=labsteward
+RuntimeDirectoryMode=0755
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProtectSystem=strict
+ProcSubset=pid
+ReadWritePaths=/etc/labsteward /run/labsteward
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER
+AmbientCapabilities=
+LimitNOFILE=128
+MemoryMax=96M
+TasksMax=32
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

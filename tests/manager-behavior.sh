@@ -9,8 +9,12 @@ cp "$project_root/catalog/plugins.json" "$fixture/opt/catalog/plugins.json"
 cp "$project_root/src/labsteward_sanitize.py" "$fixture/opt/lib/labsteward_sanitize.py"
 cp "$project_root/src/labsteward_core.py" "$fixture/opt/lib/labsteward_core.py"
 cp "$project_root/src/labsteward_mcp.py" "$fixture/opt/lib/labsteward_mcp.py"
+cp "$project_root/src/labsteward_admin.py" "$fixture/opt/lib/labsteward_admin.py"
+cp "$project_root/src/labsteward_broker.py" "$fixture/opt/lib/labsteward_broker.py"
 cp "$project_root/src/self-update.sh" "$fixture/opt/lib/self-update.sh"
 cp "$project_root/src/labsteward.service" "$fixture/systemd/labsteward.service"
+cp "$project_root/src/labsteward-admin.service" "$fixture/systemd/labsteward-admin.service"
+cp "$project_root/src/labsteward-broker.service" "$fixture/systemd/labsteward-broker.service"
 cp "$project_root/schemas/config.schema.json" "$fixture/opt/schemas/config.schema.json"
 printf 'v0.1.0\n' >"$fixture/opt/VERSION"
 printf '{"schema":1,"plugins":{},"servers":{},"clients":{}}\n' >"$fixture/etc/config.json"
@@ -24,6 +28,15 @@ run_manager() {
   LABSTEWARD_CLIENT_SECRETS_DIR="$fixture/etc/secrets/clients" \
   LABSTEWARD_TRANSPORT_CONFIG="$fixture/etc/transport.json" \
   LABSTEWARD_TLS_DIR="$fixture/etc/secrets/tls" \
+  LABSTEWARD_ADMIN_CONFIG="$fixture/etc/admin.json" \
+  LABSTEWARD_ADMIN_CREDENTIAL="$fixture/etc/secrets/admin.json" \
+  LABSTEWARD_ADMIN_TLS_DIR="$fixture/etc/secrets/admin-tls" \
+  LABSTEWARD_OAUTH_TOKEN_FILE="$fixture/etc/secrets/oauth-tokens.json" \
+  LABSTEWARD_ADMIN_FILE="$fixture/opt/lib/labsteward_admin.py" \
+  LABSTEWARD_BROKER_FILE="$fixture/opt/lib/labsteward_broker.py" \
+  LABSTEWARD_ADMIN_SYSTEMD_UNIT="$fixture/systemd/labsteward-admin.service" \
+  LABSTEWARD_BROKER_SYSTEMD_UNIT="$fixture/systemd/labsteward-broker.service" \
+  LABSTEWARD_ADMIN_GROUP_ID="$(id -g)" \
   LABSTEWARD_SYSTEMD_UNIT="$fixture/systemd/labsteward.service" \
   LABSTEWARD_SYSTEMCTL="$project_root/tests/mock-systemctl.sh" \
   LABSTEWARD_TEST_SYSTEMCTL_STATE="$fixture/systemctl.state" \
@@ -44,6 +57,29 @@ if run_manager validate 2>"$fixture/sanitizer-error"; then
 fi
 grep -q 'output sanitizer is missing or invalid' "$fixture/sanitizer-error"
 mv "$fixture/opt/lib/labsteward_sanitize.py.missing" "$fixture/opt/lib/labsteward_sanitize.py"
+python3 - "$fixture/etc/config.json" "$fixture/opt/catalog/plugins.json" <<'PY'
+import json
+import sys
+
+config_path, catalog_path = sys.argv[1:]
+config = json.load(open(config_path, encoding="utf-8"))
+config["plugins"]["proxmox"] = {"enabled": True, "version": "test"}
+config["servers"]["level-test"] = {
+    "plugin": "proxmox",
+    "endpoint": "https://pve.example.test:8006",
+    "permissions": ["audit.node"],
+}
+with open(config_path, "w", encoding="utf-8") as handle:
+    json.dump(config, handle)
+catalog = json.load(open(catalog_path, encoding="utf-8"))
+catalog["plugins"][0]["permissions"] = {"audit.lxc": "write", "audit.node": "read"}
+catalog["plugins"][0]["permission_descriptions"] = {
+    "audit.lxc": "Inspect or manage LXC workloads.",
+    "audit.node": "Inspect Proxmox nodes.",
+}
+with open(catalog_path, "w", encoding="utf-8") as handle:
+    json.dump(catalog, handle)
+PY
 run_manager client add agent1 --source 192.0.2.40 >"$fixture/client-add"
 token="$(tail -n 1 "$fixture/client-add")"
 [[ "$token" =~ ^lst_[A-Za-z0-9_-]{43}$ ]]
@@ -63,6 +99,24 @@ if grep -qF "$rotated_token" "$fixture/etc/config.json" "$fixture/etc/secrets/cl
 fi
 run_manager client source set agent1 192.0.2.41/32 | grep -q '^Set 1 source restriction'
 grep -q $'^agent1\tenabled\t192.0.2.41/32\t0 server grant(s)$' < <(run_manager client list)
+if run_manager client permission set agent1 level-test audit.node=write 2>"$fixture/assign-error"; then
+  echo "Permissions must not be configured before assigning a server." >&2
+  exit 1
+fi
+grep -q 'Add the server to this client' "$fixture/assign-error"
+run_manager client server add agent1 level-test | grep -q '^Added server level-test'
+if run_manager client server add agent1 level-test 2>"$fixture/duplicate-error"; then
+  echo "A server must not be assigned to the same client twice." >&2
+  exit 1
+fi
+grep -q 'already assigned' "$fixture/duplicate-error"
+run_manager client permission set agent1 level-test audit.node=read audit.lxc=write | grep -q '^Set 2 permission(s)'
+python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["clients"]["agent1"]["grants"]["level-test"] == {"audit.lxc":"write","audit.node":"read"}' "$fixture/etc/config.json"
+if run_manager client permission set agent1 level-test audit.unknown=read 2>"$fixture/permission-error"; then
+  echo "An undeclared plugin permission must be rejected." >&2
+  exit 1
+fi
+grep -q 'not declared' "$fixture/permission-error"
 if run_manager client permission set agent1 missing audit.node 2>"$fixture/grant-error"; then
   echo "A client grant must reference a registered server." >&2
   exit 1
@@ -78,9 +132,22 @@ if run_manager client revoke agent1 2>"$fixture/revoke-error"; then
   exit 1
 fi
 grep -q 'requires --yes' "$fixture/revoke-error"
-run_manager client revoke agent1 --yes | grep -q '^Revoked client agent1'
+run_manager server remove level-test --yes | grep -q '^Removed server registration level-test from 1 client(s)'
+python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["clients"]["agent1"]["grants"] == {}' "$fixture/etc/config.json"
+run_manager client revoke agent1 --yes | grep -q '^Revoked and removed client agent1'
 [[ ! -e "$fixture/etc/secrets/clients/agent1.json" ]]
+run_manager client list | grep -q '^No remote clients are registered.$'
 run_manager validate | grep -q '^PASS:'
+python3 - "$fixture/etc/config.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+config = json.load(open(path, encoding="utf-8"))
+config["plugins"].pop("proxmox")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(config, handle)
+PY
 run_manager plugin list | grep -q $'^proxmox\tplanned\tProxmox VE$'
 if run_manager plugin install proxmox 2>"$fixture/error"; then
   echo "A planned plugin must not install." >&2
@@ -92,6 +159,11 @@ if run_manager server add pve1 --plugin proxmox --endpoint 'https://user:pass@ex
   exit 1
 fi
 grep -q 'without embedded credentials' "$fixture/error"
+if run_manager server add pve1 --plugin proxmox --endpoint 'https://example.test:not-a-port' 2>"$fixture/error"; then
+  echo "An endpoint containing an invalid port must be rejected." >&2
+  exit 1
+fi
+grep -q 'invalid port' "$fixture/error"
 if run_manager server add pve1 --plugin proxmox --endpoint 'https://pve1.example.test:8006' 2>"$fixture/error"; then
   echo "A server must not use an uninstalled plugin." >&2
   exit 1
@@ -107,9 +179,16 @@ if run_manager transport tls create --host 127.0.0.1 2>"$fixture/tls-overwrite-e
 fi
 grep -q 'replacement requires --force --yes' "$fixture/tls-overwrite-error"
 run_manager transport configure --bind 127.0.0.1 | grep -q '^Configured TLS-only MCP transport'
+LABSTEWARD_TEST_ADMIN_PASSWORD='correct horse battery staple' run_manager admin bootstrap --username steward | grep -q '^Configured LabSteward administrator steward'
+run_manager admin tls create --host 127.0.0.1 | grep -q '^Created a separate LabSteward admin server certificate'
+run_manager admin configure --bind 127.0.0.1 --host 127.0.0.1 --admin-source 127.0.0.1/32 | grep -q '^Configured the LabSteward administrator'
+run_manager admin status | grep -q '^  OAuth issuer: https://127.0.0.1:9444$'
 run_manager transport status | grep -q '^  Service: inactive$'
 run_manager validate | grep -q '^PASS:'
 run_manager transport enable | grep -q '^Enabled and started'
 run_manager transport status | grep -q '^  Service: active$'
+run_manager admin enable | grep -q '^Enabled the LabSteward OAuth'
+run_manager admin status | grep -q '^  Web service: active$'
+run_manager admin disable | grep -q '^Disabled the LabSteward OAuth'
 run_manager transport disable | grep -q '^Disabled and stopped'
 echo "Manager behavior checks passed."

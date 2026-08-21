@@ -7,7 +7,11 @@ readonly MANAGER_ALIAS_PATH="${LABSTEWARD_MANAGER_ALIAS_PATH:-/usr/local/bin/lab
 readonly SANITIZER_PATH="${LABSTEWARD_SANITIZER_PATH:-${BASE_DIR}/lib/labsteward_sanitize.py}"
 readonly CORE_PATH="${LABSTEWARD_CORE_FILE:-${BASE_DIR}/lib/labsteward_core.py}"
 readonly MCP_PATH="${LABSTEWARD_MCP_FILE:-${BASE_DIR}/lib/labsteward_mcp.py}"
+readonly ADMIN_PATH="${LABSTEWARD_ADMIN_FILE:-${BASE_DIR}/lib/labsteward_admin.py}"
+readonly BROKER_PATH="${LABSTEWARD_BROKER_FILE:-${BASE_DIR}/lib/labsteward_broker.py}"
 readonly SYSTEMD_UNIT_PATH="${LABSTEWARD_SYSTEMD_UNIT:-/etc/systemd/system/labsteward.service}"
+readonly ADMIN_SYSTEMD_UNIT_PATH="${LABSTEWARD_ADMIN_SYSTEMD_UNIT:-/etc/systemd/system/labsteward-admin.service}"
+readonly BROKER_SYSTEMD_UNIT_PATH="${LABSTEWARD_BROKER_SYSTEMD_UNIT:-/etc/systemd/system/labsteward-broker.service}"
 readonly SYSTEMCTL="${LABSTEWARD_SYSTEMCTL:-/usr/bin/systemctl}"
 readonly VERSION_FILE="${LABSTEWARD_VERSION_FILE:-${BASE_DIR}/VERSION}"
 readonly UPDATE_URL_FILE="${BASE_DIR}/update.url"
@@ -90,7 +94,9 @@ fi
 
 download_asset "${asset_url}/SHA256SUMS" "${stage}/SHA256SUMS" "SHA256SUMS"
 required_assets=(stewctl self-update.sh labsteward-sanitize.py plugins.json config.schema.json)
-optional_runtime_assets=(labsteward-core.py labsteward-mcp.py labsteward.service)
+optional_runtime_assets=(labsteward-core.py labsteward-mcp.py labsteward-admin.py \
+  labsteward-broker.py labsteward-core.service labsteward-admin.service \
+  labsteward-broker.service)
 for asset in "${required_assets[@]}"; do
   grep -q " ${asset}$" "${stage}/SHA256SUMS" || {
     echo "LabSteward release is missing required checksum metadata for ${asset}." >&2
@@ -140,6 +146,19 @@ rollback() {
     else
       rm -f "$MCP_PATH"
     fi
+    for item in \
+      "labsteward_admin.py:$ADMIN_PATH" \
+      "labsteward_broker.py:$BROKER_PATH" \
+      "labsteward-admin.service:$ADMIN_SYSTEMD_UNIT_PATH" \
+      "labsteward-broker.service:$BROKER_SYSTEMD_UNIT_PATH"; do
+      source_name="${item%%:*}"
+      destination="${item#*:}"
+      if [[ -e "${backup}/${source_name}" ]]; then
+        cp -a "${backup}/${source_name}" "$destination"
+      else
+        rm -f "$destination"
+      fi
+    done
     if [[ -e "${backup}/labsteward.service" ]]; then
       cp -a "${backup}/labsteward.service" "$SYSTEMD_UNIT_PATH"
     else
@@ -171,6 +190,10 @@ if ((runtime_bundle)); then
   [[ ! -e "$CORE_PATH" ]] || cp -a "$CORE_PATH" "${backup}/labsteward_core.py"
   [[ ! -e "$MCP_PATH" ]] || cp -a "$MCP_PATH" "${backup}/labsteward_mcp.py"
   [[ ! -e "$SYSTEMD_UNIT_PATH" ]] || cp -a "$SYSTEMD_UNIT_PATH" "${backup}/labsteward.service"
+  [[ ! -e "$ADMIN_PATH" ]] || cp -a "$ADMIN_PATH" "${backup}/labsteward_admin.py"
+  [[ ! -e "$BROKER_PATH" ]] || cp -a "$BROKER_PATH" "${backup}/labsteward_broker.py"
+  [[ ! -e "$ADMIN_SYSTEMD_UNIT_PATH" ]] || cp -a "$ADMIN_SYSTEMD_UNIT_PATH" "${backup}/labsteward-admin.service"
+  [[ ! -e "$BROKER_SYSTEMD_UNIT_PATH" ]] || cp -a "$BROKER_SYSTEMD_UNIT_PATH" "${backup}/labsteward-broker.service"
 fi
 [[ ! -e "${BASE_DIR}/catalog/plugins.json" ]] || cp -a "${BASE_DIR}/catalog/plugins.json" "${backup}/plugins.json"
 [[ ! -e "${BASE_DIR}/schemas/config.schema.json" ]] || cp -a "${BASE_DIR}/schemas/config.schema.json" "${backup}/config.schema.json"
@@ -181,9 +204,20 @@ ln -sfn "$MANAGER_PATH" "$MANAGER_ALIAS_PATH"
 install -m 0755 "${stage}/self-update.sh" "${BASE_DIR}/lib/self-update.sh"
 install -m 0644 "${stage}/labsteward-sanitize.py" "$SANITIZER_PATH"
 if ((runtime_bundle)); then
+  if [[ $EUID -eq 0 ]]; then
+    getent group labsteward-admin >/dev/null || groupadd --system labsteward-admin
+    id labsteward-admin >/dev/null 2>&1 || useradd --system --gid labsteward-admin \
+      --home-dir /var/lib/labsteward-admin --create-home --shell /usr/sbin/nologin labsteward-admin
+    install -d -o labsteward-admin -g labsteward-admin -m 0700 /var/lib/labsteward-admin
+    install -d -o root -g labsteward-admin -m 2750 /etc/labsteward-admin
+  fi
   install -m 0644 "${stage}/labsteward-core.py" "$CORE_PATH"
   install -m 0644 "${stage}/labsteward-mcp.py" "$MCP_PATH"
-  install -D -m 0644 "${stage}/labsteward.service" "$SYSTEMD_UNIT_PATH"
+  install -m 0644 "${stage}/labsteward-admin.py" "$ADMIN_PATH"
+  install -m 0644 "${stage}/labsteward-broker.py" "$BROKER_PATH"
+  install -D -m 0644 "${stage}/labsteward-core.service" "$SYSTEMD_UNIT_PATH"
+  install -D -m 0644 "${stage}/labsteward-admin.service" "$ADMIN_SYSTEMD_UNIT_PATH"
+  install -D -m 0644 "${stage}/labsteward-broker.service" "$BROKER_SYSTEMD_UNIT_PATH"
   "$SYSTEMCTL" daemon-reload
 fi
 install -m 0644 "${stage}/plugins.json" "${BASE_DIR}/catalog/plugins.json"

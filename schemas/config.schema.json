@@ -2,6 +2,25 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/donselkirk/LabSteward/schemas/config.schema.json",
   "title": "LabSteward appliance configuration",
+  "$defs": {
+    "permissionLevels": {
+      "oneOf": [
+        {
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-z][a-z0-9.-]{0,63}$" },
+          "additionalProperties": { "enum": ["read", "write"] },
+          "maxProperties": 64
+        },
+        {
+          "description": "Legacy read-only permission list accepted during upgrades",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9.-]{0,63}$" },
+          "maxItems": 64
+        }
+      ]
+    }
+  },
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "plugins", "servers"],
@@ -26,15 +45,11 @@
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["plugin", "endpoint", "permissions"],
+        "required": ["plugin", "endpoint"],
         "properties": {
           "plugin": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
           "endpoint": { "type": "string", "maxLength": 2048 },
-          "permissions": {
-            "type": "array",
-            "uniqueItems": true,
-            "items": { "type": "string", "pattern": "^[a-z][a-z0-9.-]{0,63}$" }
-          }
+          "permissions": { "$ref": "#/$defs/permissionLevels" }
         }
       }
     },
@@ -47,6 +62,10 @@
         "required": ["enabled", "sources", "grants"],
         "properties": {
           "enabled": { "type": "boolean" },
+          "auth": { "enum": ["legacy_token", "oauth"] },
+          "display_name": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "oauth_client_id": { "type": "string", "minLength": 1, "maxLength": 2048 },
+          "auth_generation": { "type": "integer", "minimum": 1 },
           "sources": {
             "type": "array",
             "minItems": 1,
@@ -56,11 +75,7 @@
           "grants": {
             "type": "object",
             "propertyNames": { "pattern": "^[a-z][a-z0-9._-]{0,63}$" },
-            "additionalProperties": {
-              "type": "array",
-              "uniqueItems": true,
-              "items": { "type": "string", "pattern": "^[a-z][a-z0-9.-]{0,63}$" }
-            }
+            "additionalProperties": { "$ref": "#/$defs/permissionLevels" }
           }
         }
       }

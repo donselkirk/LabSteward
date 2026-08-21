@@ -8,6 +8,9 @@ credential commands will own protected secret-file creation in later releases.
 from __future__ import annotations
 
 import argparse
+import base64
+import getpass
+import grp
 import hashlib
 import http.client
 import importlib.util
@@ -44,6 +47,32 @@ TRANSPORT_CONFIG_FILE = Path(
     os.environ.get("LABSTEWARD_TRANSPORT_CONFIG", "/etc/labsteward/transport.json")
 )
 TLS_DIR = Path(os.environ.get("LABSTEWARD_TLS_DIR", "/etc/labsteward/secrets/tls"))
+ADMIN_CONFIG_FILE = Path(
+    os.environ.get("LABSTEWARD_ADMIN_CONFIG", "/etc/labsteward-admin/config.json")
+)
+ADMIN_CREDENTIAL_FILE = Path(
+    os.environ.get("LABSTEWARD_ADMIN_CREDENTIAL", "/etc/labsteward-admin/admin.json")
+)
+ADMIN_TLS_DIR = Path(
+    os.environ.get("LABSTEWARD_ADMIN_TLS_DIR", "/etc/labsteward-admin/tls")
+)
+OAUTH_TOKEN_FILE = Path(
+    os.environ.get("LABSTEWARD_OAUTH_TOKEN_FILE", "/etc/labsteward/secrets/oauth-tokens.json")
+)
+ADMIN_FILE = Path(
+    os.environ.get("LABSTEWARD_ADMIN_FILE", str(BASE_DIR / "lib/labsteward_admin.py"))
+)
+BROKER_FILE = Path(
+    os.environ.get("LABSTEWARD_BROKER_FILE", str(BASE_DIR / "lib/labsteward_broker.py"))
+)
+ADMIN_SYSTEMD_UNIT_FILE = Path(
+    os.environ.get("LABSTEWARD_ADMIN_SYSTEMD_UNIT", "/etc/systemd/system/labsteward-admin.service")
+)
+BROKER_SYSTEMD_UNIT_FILE = Path(
+    os.environ.get("LABSTEWARD_BROKER_SYSTEMD_UNIT", "/etc/systemd/system/labsteward-broker.service")
+)
+ADMIN_USER = os.environ.get("LABSTEWARD_ADMIN_USER", "labsteward-admin")
+ADMIN_GROUP = os.environ.get("LABSTEWARD_ADMIN_GROUP", "labsteward-admin")
 SYSTEMD_UNIT_FILE = Path(
     os.environ.get("LABSTEWARD_SYSTEMD_UNIT", "/etc/systemd/system/labsteward.service")
 )
@@ -55,6 +84,7 @@ ALLOW_LOOPBACK = os.environ.get("LABSTEWARD_ALLOW_LOOPBACK") == "1"
 IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 ALIAS = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 PERMISSION = re.compile(r"^[a-z][a-z0-9.-]{0,63}$")
+PERMISSION_LEVELS = {"off": 0, "read": 1, "write": 2}
 HOSTNAME = re.compile(
     r"^(?=.{1,253}\.?$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.?$",
@@ -142,6 +172,16 @@ def catalog_plugins() -> dict[str, dict]:
     for plugin in catalog["plugins"]:
         if not isinstance(plugin, dict) or not IDENTIFIER.fullmatch(str(plugin.get("id", ""))):
             raise UserError("Plugin catalog contains an invalid ID")
+        raw_permissions = plugin.get("permissions", {})
+        names = raw_permissions if isinstance(raw_permissions, list) else raw_permissions.keys() if isinstance(raw_permissions, dict) else []
+        descriptions = plugin.get("permission_descriptions", {})
+        if not isinstance(descriptions, dict) or set(str(item) for item in names) != set(descriptions):
+            raise UserError("Plugin catalog must describe every declared permission")
+        if any(
+            not isinstance(description, str) or not description.strip() or len(description) > 240
+            for description in descriptions.values()
+        ):
+            raise UserError("Plugin catalog contains an invalid permission description")
         result[plugin["id"]] = plugin
     return result
 
@@ -153,8 +193,48 @@ def require_identifier(value: str, label: str, pattern: re.Pattern[str]) -> str:
     return normalized
 
 
+def permission_levels(value: object, label: str = "permissions") -> dict[str, str]:
+    """Normalize legacy permission lists to read-only level mappings."""
+    if isinstance(value, list):
+        value = {str(item): "read" for item in value}
+    if not isinstance(value, dict) or len(value) > 64:
+        raise UserError(f"Invalid {label}")
+    normalized = {}
+    for permission, level in value.items():
+        name = require_identifier(str(permission), "permission", PERMISSION)
+        if level not in {"read", "write"}:
+            raise UserError(f"Invalid permission level for {name}")
+        normalized[name] = str(level)
+    return dict(sorted(normalized.items()))
+
+
+def parse_permission_levels(values: list[str]) -> dict[str, str]:
+    permissions = {}
+    for value in values:
+        name, separator, level = value.partition("=")
+        permission = require_identifier(name, "permission", PERMISSION)
+        selected = level.lower() if separator else "read"
+        if selected not in PERMISSION_LEVELS:
+            raise UserError(f"Permission level must be off, read, or write: {value}")
+        if selected == "off":
+            permissions.pop(permission, None)
+        else:
+            permissions[permission] = selected
+    return dict(sorted(permissions.items()))
+
+
+def declared_permissions(plugin: dict) -> set[str]:
+    raw = plugin.get("permissions", {})
+    values = raw if isinstance(raw, list) else raw.keys() if isinstance(raw, dict) else []
+    return {require_identifier(str(item), "permission", PERMISSION) for item in values}
+
+
 def require_endpoint(value: str) -> str:
     parsed = urlsplit(value)
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise UserError("Server endpoint contains an invalid port") from exc
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
         raise UserError("Server endpoints must be HTTPS origins without embedded credentials")
     if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
@@ -224,6 +304,55 @@ def install_tls_file(source: Path, destination: Path, mode: int, service_group: 
             metadata = CONFIG_FILE.stat()
             group_id = metadata.st_gid if service_group else BASE_DIR.stat().st_gid
             os.chown(temporary, metadata.st_uid, group_id)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def admin_group_id() -> int:
+    override = os.environ.get("LABSTEWARD_ADMIN_GROUP_ID")
+    if override is not None:
+        return int(override)
+    if ALLOW_NON_ROOT:
+        return os.getgid()
+    try:
+        return grp.getgrnam(ADMIN_GROUP).gr_gid
+    except KeyError as exc:
+        raise UserError("The labsteward-admin service account is unavailable") from exc
+
+
+def save_admin_json(path: Path, value: dict, mode: int = 0o640) -> None:
+    path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
+    owner_id = CONFIG_FILE.stat().st_uid if CONFIG_FILE.exists() else os.getuid()
+    os.chmod(path.parent, 0o2750)
+    os.chown(path.parent, owner_id, admin_group_id())
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.chown(temporary, owner_id, admin_group_id())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def install_admin_tls_file(source: Path, destination: Path, mode: int) -> None:
+    destination.parent.mkdir(mode=0o2750, parents=True, exist_ok=True)
+    os.chmod(destination.parent, 0o2750)
+    owner_id = CONFIG_FILE.stat().st_uid if CONFIG_FILE.exists() else os.getuid()
+    os.chown(destination.parent, owner_id, admin_group_id())
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    os.close(fd)
+    temporary = Path(temporary_name)
+    try:
+        shutil.copyfile(source, temporary)
+        os.chmod(temporary, mode)
+        os.chown(temporary, owner_id, admin_group_id())
         os.replace(temporary, destination)
     finally:
         temporary.unlink(missing_ok=True)
@@ -376,10 +505,12 @@ def command_configure(_: argparse.Namespace) -> None:
     print("\nConfiguration order:")
     print("  1. stewctl transport tls create --host IP_OR_DNS")
     print("  2. stewctl transport configure --bind IP [--host DNS_NAME]")
-    print("  3. stewctl client add CLIENT --source IP_OR_CIDR")
-    print("  4. stewctl transport enable")
-    print("  5. Connect an MCP client and call core_status")
-    print("  6. Install and configure plugins only after transport validation")
+    print("  3. stewctl admin tls create --host IP_OR_DNS")
+    print("  4. stewctl admin bootstrap --username ADMIN")
+    print("  5. stewctl admin configure --bind IP --host IP_OR_DNS --admin-source CIDR")
+    print("  6. stewctl transport enable && stewctl admin enable")
+    print("  7. Add the MCP URL, authenticate in a browser, and call core_status")
+    print("  8. Install and configure plugins only after transport validation")
 
 
 def command_client_list(_: argparse.Namespace) -> None:
@@ -401,7 +532,13 @@ def command_client_add(args: argparse.Namespace) -> None:
     if client_id in config["clients"]:
         raise UserError(f"Client already exists: {client_id}")
     token = write_client_token(client_id)
-    config["clients"][client_id] = {"enabled": True, "sources": sources, "grants": {}}
+    config["clients"][client_id] = {
+        "enabled": True,
+        "sources": sources,
+        "grants": {},
+        "auth": "legacy_token",
+        "display_name": client_id,
+    }
     try:
         save_config(config)
     except Exception:
@@ -420,11 +557,28 @@ def command_client_revoke(args: argparse.Namespace) -> None:
         raise UserError(f"Unknown client: {client_id}")
     if not args.yes:
         raise UserError("Client revocation requires --yes")
-    client["enabled"] = False
-    client["grants"] = {}
+    if OAUTH_TOKEN_FILE.exists():
+        tokens = read_json(OAUTH_TOKEN_FILE)
+        if tokens.get("schema") == 1 and isinstance(tokens.get("tokens"), list):
+            tokens.setdefault("generations", {})
+            generation = client.get("auth_generation")
+            if isinstance(tokens["generations"], dict) and isinstance(generation, int) and generation > 0:
+                previous = tokens["generations"].get(client_id, 0)
+                if not isinstance(previous, int) or previous < 0:
+                    raise UserError("OAuth access-token registry is invalid")
+                tokens["generations"][client_id] = max(
+                    generation, previous
+                )
+            tokens["tokens"] = [
+                item
+                for item in tokens["tokens"]
+                if not isinstance(item, dict) or item.get("client") != client_id
+            ]
+            save_json(OAUTH_TOKEN_FILE, tokens)
+    del config["clients"][client_id]
     save_config(config)
     client_token_path(client_id).unlink(missing_ok=True)
-    print(f"Revoked client {client_id} and removed its token metadata.")
+    print(f"Revoked and removed client {client_id} and its token metadata.")
 
 
 def command_client_rotate_token(args: argparse.Namespace) -> None:
@@ -457,7 +611,7 @@ def command_client_source_set(args: argparse.Namespace) -> None:
 def command_client_permission_set(args: argparse.Namespace) -> None:
     client_id = require_identifier(args.client, "client ID", IDENTIFIER)
     alias = require_identifier(args.server, "server alias", ALIAS)
-    permissions = sorted({require_identifier(item, "permission", PERMISSION) for item in args.permissions})
+    permissions = parse_permission_levels(args.permissions)
     config = load_config()
     client = config["clients"].get(client_id)
     if not client:
@@ -467,17 +621,47 @@ def command_client_permission_set(args: argparse.Namespace) -> None:
     server = config["servers"].get(alias)
     if not server:
         raise UserError(f"Unknown server alias: {alias}")
-    unauthorized = sorted(set(permissions) - set(server.get("permissions", [])))
+    if alias not in client.get("grants", {}):
+        raise UserError("Add the server to this client before configuring permissions")
+    plugin = catalog_plugins().get(server.get("plugin"), {})
+    unauthorized = sorted(set(permissions) - declared_permissions(plugin))
     if unauthorized:
         raise UserError(
-            f"Client permissions exceed the server grant for {alias}: {', '.join(unauthorized)}"
+            f"Permission is not declared by plugin {server.get('plugin')}: {', '.join(unauthorized)}"
         )
-    if permissions:
-        client["grants"][alias] = permissions
-    else:
-        client["grants"].pop(alias, None)
+    client["grants"][alias] = permissions
     save_config(config)
     print(f"Set {len(permissions)} permission(s) for client {client_id} on {alias}.")
+
+
+def command_client_server_add(args: argparse.Namespace) -> None:
+    client_id = require_identifier(args.client, "client ID", IDENTIFIER)
+    alias = require_identifier(args.server, "server alias", ALIAS)
+    config = load_config()
+    client = config["clients"].get(client_id)
+    if not client or not client.get("enabled"):
+        raise UserError(f"Unknown or revoked client: {client_id}")
+    if alias not in config["servers"]:
+        raise UserError(f"Unknown server alias: {alias}")
+    if alias in client.get("grants", {}):
+        raise UserError("Server is already assigned to this client")
+    client.setdefault("grants", {})[alias] = {}
+    save_config(config)
+    print(f"Added server {alias} to client {client_id} with all permissions off.")
+
+
+def command_client_server_remove(args: argparse.Namespace) -> None:
+    client_id = require_identifier(args.client, "client ID", IDENTIFIER)
+    alias = require_identifier(args.server, "server alias", ALIAS)
+    config = load_config()
+    client = config["clients"].get(client_id)
+    if not client or not client.get("enabled"):
+        raise UserError(f"Unknown or revoked client: {client_id}")
+    if alias not in client.get("grants", {}):
+        raise UserError("Server is not assigned to this client")
+    del client["grants"][alias]
+    save_config(config)
+    print(f"Removed server {alias} from client {client_id}.")
 
 
 def command_plugin_install(args: argparse.Namespace) -> None:
@@ -501,8 +685,7 @@ def command_plugin_remove(args: argparse.Namespace) -> None:
 
 def command_server_list(_: argparse.Namespace) -> None:
     for alias, server in sorted(load_config()["servers"].items()):
-        permissions = ",".join(server.get("permissions", [])) or "none"
-        print(f"{alias}\t{server.get('plugin')}\t{server.get('endpoint')}\t{permissions}")
+        print(f"{alias}\t{server.get('plugin')}\t{server.get('endpoint')}")
 
 
 def command_server_add(args: argparse.Namespace) -> None:
@@ -515,7 +698,7 @@ def command_server_add(args: argparse.Namespace) -> None:
     installed = config["plugins"].get(plugin_id)
     if not installed or not installed.get("enabled"):
         raise UserError(f"Plugin must be installed and enabled first: {plugin_id}")
-    config["servers"][alias] = {"plugin": plugin_id, "endpoint": endpoint, "permissions": []}
+    config["servers"][alias] = {"plugin": plugin_id, "endpoint": endpoint}
     save_config(config)
     print(f"Added server {alias} with no permissions. Grant permissions explicitly before use.")
 
@@ -527,44 +710,14 @@ def command_server_remove(args: argparse.Namespace) -> None:
         raise UserError(f"Unknown server alias: {alias}")
     if not args.yes:
         raise UserError("Server removal requires --yes; credentials are not removed by this command")
-    client_users = [
-        client_id
-        for client_id, client in config["clients"].items()
-        if alias in client.get("grants", {})
-    ]
-    if client_users:
-        raise UserError(
-            f"Remove client grants for {alias} first: {', '.join(sorted(client_users))}"
-        )
+    affected = 0
+    for client in config["clients"].values():
+        if isinstance(client, dict) and isinstance(client.get("grants"), dict):
+            affected += int(alias in client["grants"])
+            client["grants"].pop(alias, None)
     del config["servers"][alias]
     save_config(config)
-    print(f"Removed server registration {alias}; inspect protected credentials separately.")
-
-
-def command_permission_set(args: argparse.Namespace) -> None:
-    alias = require_identifier(args.alias, "server alias", ALIAS)
-    permissions = sorted({require_identifier(item, "permission", PERMISSION) for item in args.permissions})
-    config = load_config()
-    server = config["servers"].get(alias)
-    if not server:
-        raise UserError(f"Unknown server alias: {alias}")
-    plugin = catalog_plugins().get(server["plugin"], {})
-    allowed = set(plugin.get("permissions", []))
-    unknown = sorted(set(permissions) - allowed)
-    if unknown:
-        raise UserError(f"Permission is not declared by plugin {server['plugin']}: {', '.join(unknown)}")
-    client_users = [
-        client_id
-        for client_id, client in config["clients"].items()
-        if set(client.get("grants", {}).get(alias, [])) - set(permissions)
-    ]
-    if client_users:
-        raise UserError(
-            f"Reduce client permissions for {alias} first: {', '.join(sorted(client_users))}"
-        )
-    server["permissions"] = permissions
-    save_config(config)
-    print(f"Set {len(permissions)} permission(s) for {alias}.")
+    print(f"Removed server registration {alias} from {affected} client(s); inspect protected credentials separately.")
 
 
 def validation_errors(config: dict, catalog: dict[str, dict]) -> list[str]:
@@ -581,24 +734,33 @@ def validation_errors(config: dict, catalog: dict[str, dict]) -> list[str]:
         ("output sanitizer", SANITIZER_FILE),
         ("core dispatcher", CORE_FILE),
         ("MCP transport", MCP_FILE),
+        ("OAuth administrator", ADMIN_FILE),
+        ("administration broker", BROKER_FILE),
     ):
         try:
             source = path.read_text(encoding="utf-8")
             compile(source, str(path), "exec")
         except (OSError, SyntaxError) as exc:
             errors.append(f"{label} is missing or invalid: {exc}")
-    if not SYSTEMD_UNIT_FILE.is_file():
-        errors.append(f"MCP service unit is missing: {SYSTEMD_UNIT_FILE}")
-    else:
-        core_group = BASE_DIR.stat().st_gid
-        unit_error = validate_file_security(SYSTEMD_UNIT_FILE, 0o644, core_group)
-        if unit_error:
-            errors.append(unit_error)
+    for label, unit_path in (
+        ("MCP", SYSTEMD_UNIT_FILE),
+        ("administrator", ADMIN_SYSTEMD_UNIT_FILE),
+        ("broker", BROKER_SYSTEMD_UNIT_FILE),
+    ):
+        if not unit_path.is_file():
+            errors.append(f"{label} service unit is missing: {unit_path}")
+        else:
+            core_group = BASE_DIR.stat().st_gid
+            unit_error = validate_file_security(unit_path, 0o644, core_group)
+            if unit_error:
+                errors.append(unit_error)
     for path, mode in (
         (SELF_UPDATE, 0o755),
         (SANITIZER_FILE, 0o644),
         (CORE_FILE, 0o644),
         (MCP_FILE, 0o644),
+        (ADMIN_FILE, 0o644),
+        (BROKER_FILE, 0o644),
     ):
         core_group = BASE_DIR.stat().st_gid
         security_error = validate_file_security(path, mode, core_group)
@@ -622,6 +784,37 @@ def validation_errors(config: dict, catalog: dict[str, dict]) -> list[str]:
             security_error = validate_file_security(path, mode, group_id)
             if security_error:
                 errors.append(security_error)
+    if ADMIN_CONFIG_FILE.exists():
+        try:
+            validate_admin_config()
+        except UserError as exc:
+            errors.append(str(exc))
+        admin_gid = admin_group_id()
+        for path, mode in (
+            (ADMIN_CONFIG_FILE, 0o640),
+            (ADMIN_CREDENTIAL_FILE, 0o640),
+            (admin_tls_paths()["server_key"], 0o640),
+            (admin_tls_paths()["server_cert"], 0o644),
+        ):
+            security_error = validate_file_security(path, mode, admin_gid)
+            if security_error:
+                errors.append(security_error)
+    if OAUTH_TOKEN_FILE.exists():
+        try:
+            oauth_tokens = read_json(OAUTH_TOKEN_FILE)
+            generations = oauth_tokens.get("generations", {})
+            if (
+                oauth_tokens.get("schema") != 1
+                or not isinstance(oauth_tokens.get("tokens"), list)
+                or not isinstance(generations, dict)
+                or any(
+                    not isinstance(name, str) or not isinstance(value, int) or value < 1
+                    for name, value in generations.items()
+                )
+            ):
+                errors.append("OAuth access-token registry is invalid")
+        except UserError as exc:
+            errors.append(str(exc))
     for plugin_id, installed in config["plugins"].items():
         if plugin_id not in catalog:
             errors.append(f"installed plugin is absent from catalog: {plugin_id}")
@@ -641,13 +834,6 @@ def validation_errors(config: dict, catalog: dict[str, dict]) -> list[str]:
         if plugin_id not in config["plugins"]:
             errors.append(f"server {alias} uses an uninstalled plugin: {plugin_id}")
             continue
-        if not isinstance(server.get("permissions"), list):
-            errors.append(f"server {alias} has an invalid permission list")
-            continue
-        allowed = set(catalog.get(plugin_id, {}).get("permissions", []))
-        unknown = set(server.get("permissions", [])) - allowed
-        if unknown:
-            errors.append(f"server {alias} has undeclared permissions: {', '.join(sorted(unknown))}")
     for client_id, client in config["clients"].items():
         try:
             require_identifier(client_id, "client ID", IDENTIFIER)
@@ -678,20 +864,34 @@ def validation_errors(config: dict, catalog: dict[str, dict]) -> list[str]:
                 if not server:
                     errors.append(f"client {client_id} has a grant for unknown server {alias}")
                     continue
-                if not isinstance(permissions, list):
-                    errors.append(f"client {client_id} has invalid permissions for {alias}")
+                try:
+                    client_permissions = permission_levels(permissions, "client permissions")
+                    plugin = catalog.get(server.get("plugin"), {})
+                    allowed = declared_permissions(plugin)
+                except UserError as exc:
+                    errors.append(f"client {client_id} for {alias}: {exc}")
                     continue
-                unauthorized = set(permissions) - set(server.get("permissions", []))
+                unauthorized = sorted(set(client_permissions) - allowed)
                 if unauthorized:
                     errors.append(
                         f"client {client_id} exceeds the server grant for {alias}: "
                         f"{', '.join(sorted(unauthorized))}"
                     )
-        if enabled:
+        auth_type = client.get("auth", "legacy_token")
+        if auth_type not in {"legacy_token", "oauth"}:
+            errors.append(f"client {client_id} has an unsupported authentication type")
+        if auth_type == "oauth" and not isinstance(client.get("oauth_client_id"), str):
+            errors.append(f"client {client_id} has invalid OAuth metadata")
+        if auth_type == "oauth" and (
+            not isinstance(client.get("auth_generation"), int)
+            or client.get("auth_generation", 0) < 1
+        ):
+            errors.append(f"client {client_id} has invalid OAuth generation metadata")
+        if enabled and auth_type == "legacy_token":
             token_error = validate_client_token(client_id)
             if token_error:
                 errors.append(token_error)
-        elif client_token_path(client_id).exists():
+        elif not enabled and client_token_path(client_id).exists():
             errors.append(f"revoked client {client_id} retains token metadata")
     return errors
 
@@ -840,6 +1040,247 @@ def certificate_covers(host: str, cert_file: Path) -> None:
         raise UserError(f"Transport certificate does not cover allowed host: {host}")
 
 
+def admin_tls_paths() -> dict[str, Path]:
+    return {
+        "server_key": ADMIN_TLS_DIR / "server.key",
+        "server_cert": ADMIN_TLS_DIR / "server.crt",
+    }
+
+
+def url_host(host: str) -> str:
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    return f"[{address}]" if address.version == 6 else str(address)
+
+
+def command_admin_bootstrap(args: argparse.Namespace) -> None:
+    username = require_identifier(args.username, "administrator username", IDENTIFIER)
+    if ADMIN_CREDENTIAL_FILE.exists() and not (args.force and args.yes):
+        raise UserError("An administrator already exists; replacement requires --force --yes")
+    test_password = os.environ.get("LABSTEWARD_TEST_ADMIN_PASSWORD") if ALLOW_NON_ROOT else None
+    password = test_password if test_password is not None else getpass.getpass("New administrator password: ")
+    confirmation = test_password if test_password is not None else getpass.getpass("Confirm password: ")
+    if password != confirmation:
+        raise UserError("Administrator passwords did not match")
+    if len(password) < 14 or len(password) > 256:
+        raise UserError("Administrator password must contain 14 to 256 characters")
+    if username in password.lower():
+        raise UserError("Administrator password must not contain the username")
+    salt = secrets.token_bytes(16)
+    n, r, p = 2**15, 8, 1
+    try:
+        digest = hashlib.scrypt(
+            password.encode("utf-8"), salt=salt, n=n, r=r, p=p, dklen=32,
+            maxmem=64 * 1024 * 1024,
+        )
+    except ValueError as exc:
+        raise UserError("Unable to derive the administrator credential securely") from exc
+    record = {
+        "schema": 1,
+        "algorithm": "scrypt",
+        "username": username,
+        "salt": base64.b64encode(salt).decode("ascii"),
+        "digest": base64.b64encode(digest).decode("ascii"),
+        "n": n,
+        "r": r,
+        "p": p,
+    }
+    save_admin_json(ADMIN_CREDENTIAL_FILE, record)
+    print(f"Configured LabSteward administrator {username}.")
+    print("No recovery credential was created; reset access from the LXC console if necessary.")
+
+
+def command_admin_tls_create(args: argparse.Namespace) -> None:
+    hosts = list(dict.fromkeys(require_transport_host(host) for host in args.host))
+    ca_paths = tls_paths()
+    if not ca_paths["ca_key"].is_file() or not ca_paths["ca_cert"].is_file():
+        raise UserError("Create the LabSteward transport CA before creating the admin certificate")
+    paths = admin_tls_paths()
+    existing = [path for path in paths.values() if path.exists()]
+    if existing and not (args.force and args.yes):
+        raise UserError("Admin TLS material already exists; replacement requires --force --yes")
+    with tempfile.TemporaryDirectory(prefix="labsteward-admin-tls.") as directory:
+        work = Path(directory)
+        server_key = work / "server.key"
+        server_request = work / "server.csr"
+        server_cert = work / "server.crt"
+        extensions = work / "server-ext.cnf"
+        san_entries = []
+        for index, host in enumerate(hosts, start=1):
+            try:
+                ipaddress.ip_address(host)
+                san_entries.append(f"IP.{index} = {host}")
+            except ValueError:
+                san_entries.append(f"DNS.{index} = {host}")
+        extensions.write_text(
+            "[server]\n"
+            "basicConstraints = critical,CA:FALSE\n"
+            "keyUsage = critical,digitalSignature,keyEncipherment\n"
+            "extendedKeyUsage = serverAuth\n"
+            "subjectKeyIdentifier = hash\n"
+            "authorityKeyIdentifier = keyid,issuer\n"
+            "subjectAltName = @alt_names\n"
+            "[alt_names]\n"
+            + "\n".join(san_entries)
+            + "\n",
+            encoding="utf-8",
+        )
+        run_openssl(
+            "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:3072",
+            "-out", str(server_key),
+        )
+        run_openssl(
+            "req", "-new", "-sha256", "-key", str(server_key), "-out",
+            str(server_request), "-subj", f"/CN={hosts[0]}",
+        )
+        run_openssl(
+            "x509", "-req", "-sha256", "-in", str(server_request), "-CA",
+            str(ca_paths["ca_cert"]), "-CAkey", str(ca_paths["ca_key"]),
+            "-CAcreateserial", "-out", str(server_cert), "-days", "825",
+            "-extfile", str(extensions), "-extensions", "server",
+        )
+        install_admin_tls_file(server_key, paths["server_key"], 0o640)
+        install_admin_tls_file(server_cert, paths["server_cert"], 0o644)
+    print("Created a separate LabSteward admin server certificate signed by the existing local CA.")
+
+
+def validate_admin_config() -> dict:
+    config = read_json(ADMIN_CONFIG_FILE)
+    if config.get("schema") != 1:
+        raise UserError("Unsupported administrator configuration schema")
+    bind = require_bind_address(str(config.get("bind", "")))
+    port = config.get("port")
+    if not isinstance(port, int) or not 1024 <= port <= 65535:
+        raise UserError("Administrator port must be between 1024 and 65535")
+    hosts = config.get("allowed_hosts")
+    if not isinstance(hosts, list) or not hosts or len(hosts) > 16:
+        raise UserError("Administrator service must define one to sixteen allowed hosts")
+    normalized_hosts = [require_transport_host(str(host)) for host in hosts]
+    for label in ("admin_sources", "enrollment_sources"):
+        sources = config.get(label)
+        if not isinstance(sources, list) or not sources or len(sources) > 16:
+            raise UserError(f"Administrator service has invalid {label}")
+        config[label] = [require_source(str(source)) for source in sources]
+    issuer = require_endpoint(str(config.get("issuer", "")))
+    resource = str(config.get("resource", ""))
+    parsed_resource = urlsplit(resource)
+    try:
+        parsed_resource.port
+    except ValueError as exc:
+        raise UserError("Administrator OAuth resource contains an invalid port") from exc
+    if (
+        parsed_resource.scheme != "https"
+        or not parsed_resource.hostname
+        or parsed_resource.path != "/mcp"
+        or parsed_resource.query
+        or parsed_resource.fragment
+        or parsed_resource.username
+        or parsed_resource.password
+    ):
+        raise UserError("Administrator OAuth resource must be the canonical HTTPS MCP URL")
+    paths = admin_tls_paths()
+    if Path(str(config.get("cert_file", ""))) != paths["server_cert"] or Path(
+        str(config.get("key_file", ""))
+    ) != paths["server_key"]:
+        raise UserError("Administrator service must use the protected admin TLS paths")
+    try:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_cert_chain(paths["server_cert"], paths["server_key"])
+    except (OSError, ssl.SSLError) as exc:
+        raise UserError("Administrator TLS certificate and key are unavailable or mismatched") from exc
+    return {
+        **config,
+        "bind": bind,
+        "port": port,
+        "allowed_hosts": normalized_hosts,
+        "issuer": issuer,
+        "resource": resource,
+    }
+
+
+def command_admin_configure(args: argparse.Namespace) -> None:
+    transport = validate_transport_config()
+    bind = require_bind_address(args.bind)
+    public_host = require_transport_host(args.host)
+    if public_host not in transport["allowed_hosts"]:
+        raise UserError("The admin public host must already be allowed by the MCP transport")
+    certificate_covers(public_host, admin_tls_paths()["server_cert"])
+    admin_sources = sorted({require_source(item) for item in args.admin_source})
+    enrollment_sources = sorted(
+        {require_source(item) for item in (args.enrollment_source or args.admin_source)}
+    )
+    host_for_url = url_host(public_host)
+    issuer = f"https://{host_for_url}:{args.port}"
+    resource = f"https://{host_for_url}:{transport['port']}/mcp"
+    record = {
+        "schema": 1,
+        "bind": bind,
+        "port": args.port,
+        "allowed_hosts": list(dict.fromkeys([bind, public_host])),
+        "admin_sources": admin_sources,
+        "enrollment_sources": enrollment_sources,
+        "issuer": issuer,
+        "resource": resource,
+        "cert_file": str(admin_tls_paths()["server_cert"]),
+        "key_file": str(admin_tls_paths()["server_key"]),
+    }
+    save_admin_json(ADMIN_CONFIG_FILE, record)
+    validate_admin_config()
+    raw_transport = read_transport_config()
+    raw_transport["resource"] = resource
+    raw_transport["authorization_servers"] = [issuer]
+    save_json(TRANSPORT_CONFIG_FILE, raw_transport)
+    print(f"Configured the LabSteward administrator and OAuth interface at {issuer}/admin.")
+    print("The services remain disabled until an administrator is bootstrapped and admin access is enabled.")
+
+
+def admin_service_state(unit: str) -> str:
+    try:
+        result = systemctl("is-active", unit, check=False)
+    except UserError:
+        return "unknown"
+    return result.stdout.strip() or "inactive"
+
+
+def command_admin_enable(_: argparse.Namespace) -> None:
+    validate_transport_config()
+    validate_admin_config()
+    if not ADMIN_CREDENTIAL_FILE.is_file():
+        raise UserError("Bootstrap the administrator before enabling browser access")
+    systemctl("daemon-reload")
+    systemctl("enable", "--now", "labsteward-broker.service")
+    systemctl("enable", "--now", "labsteward-admin.service")
+    if transport_service_state() == "active":
+        systemctl("restart", "labsteward.service")
+    if admin_service_state("labsteward-broker.service") != "active" or admin_service_state(
+        "labsteward-admin.service"
+    ) != "active":
+        raise UserError("LabSteward administrator services did not become active")
+    print("Enabled the LabSteward OAuth and administrator interface.")
+
+
+def command_admin_disable(_: argparse.Namespace) -> None:
+    systemctl("disable", "--now", "labsteward-admin.service")
+    systemctl("disable", "--now", "labsteward-broker.service")
+    print("Disabled the LabSteward OAuth and administrator interface.")
+
+
+def command_admin_status(_: argparse.Namespace) -> None:
+    if not ADMIN_CONFIG_FILE.exists():
+        print("LabSteward administrator interface: not configured")
+        return
+    config = validate_admin_config()
+    print("LabSteward administrator interface: configured")
+    print(f"  URL: {config['issuer']}/admin")
+    print(f"  OAuth issuer: {config['issuer']}")
+    print(f"  MCP resource: {config['resource']}")
+    print(f"  Web service: {admin_service_state('labsteward-admin.service')}")
+    print(f"  Management broker: {admin_service_state('labsteward-broker.service')}")
+
+
 def command_transport_configure(args: argparse.Namespace) -> None:
     bind = require_bind_address(args.bind)
     hosts = list(dict.fromkeys([bind, *(require_transport_host(host) for host in args.host)]))
@@ -975,6 +1416,31 @@ def parser() -> argparse.ArgumentParser:
     create_transport_tls.add_argument("--yes", action="store_true")
     create_transport_tls.set_defaults(handler=command_transport_tls_create)
 
+    admin = commands.add_parser("admin")
+    admin_commands = admin.add_subparsers(dest="admin_command", required=True)
+    admin_commands.add_parser("status").set_defaults(handler=command_admin_status)
+    admin_commands.add_parser("enable").set_defaults(handler=command_admin_enable)
+    admin_commands.add_parser("disable").set_defaults(handler=command_admin_disable)
+    bootstrap_admin = admin_commands.add_parser("bootstrap")
+    bootstrap_admin.add_argument("--username", required=True)
+    bootstrap_admin.add_argument("--force", action="store_true")
+    bootstrap_admin.add_argument("--yes", action="store_true")
+    bootstrap_admin.set_defaults(handler=command_admin_bootstrap)
+    configure_admin = admin_commands.add_parser("configure")
+    configure_admin.add_argument("--bind", required=True)
+    configure_admin.add_argument("--host", required=True)
+    configure_admin.add_argument("--port", type=int, default=9444, choices=range(1024, 65536))
+    configure_admin.add_argument("--admin-source", action="append", required=True)
+    configure_admin.add_argument("--enrollment-source", action="append", default=[])
+    configure_admin.set_defaults(handler=command_admin_configure)
+    admin_tls = admin_commands.add_parser("tls")
+    admin_tls_commands = admin_tls.add_subparsers(dest="admin_tls_command", required=True)
+    create_admin_tls = admin_tls_commands.add_parser("create")
+    create_admin_tls.add_argument("--host", action="append", required=True)
+    create_admin_tls.add_argument("--force", action="store_true")
+    create_admin_tls.add_argument("--yes", action="store_true")
+    create_admin_tls.set_defaults(handler=command_admin_tls_create)
+
     update = commands.add_parser("update")
     update_commands = update.add_subparsers(dest="update_command", required=True)
     update_commands.add_parser("check").set_defaults(handler=command_update_check)
@@ -1032,13 +1498,16 @@ def parser() -> argparse.ArgumentParser:
     set_client_permissions.add_argument("server")
     set_client_permissions.add_argument("permissions", nargs="*")
     set_client_permissions.set_defaults(handler=command_client_permission_set)
-
-    permission = commands.add_parser("permission", aliases=["permissions"])
-    permission_commands = permission.add_subparsers(dest="permission_command", required=True)
-    set_permissions = permission_commands.add_parser("set")
-    set_permissions.add_argument("alias")
-    set_permissions.add_argument("permissions", nargs="*")
-    set_permissions.set_defaults(handler=command_permission_set)
+    client_server = client_commands.add_parser("server")
+    client_server_commands = client_server.add_subparsers(dest="client_server_command", required=True)
+    add_client_server = client_server_commands.add_parser("add")
+    add_client_server.add_argument("client")
+    add_client_server.add_argument("server")
+    add_client_server.set_defaults(handler=command_client_server_add)
+    remove_client_server = client_server_commands.add_parser("remove")
+    remove_client_server.add_argument("client")
+    remove_client_server.add_argument("server")
+    remove_client_server.set_defaults(handler=command_client_server_remove)
     return root
 
 

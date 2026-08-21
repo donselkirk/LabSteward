@@ -18,6 +18,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from labsteward_core import DispatchError, dispatch_action, tool_definitions
 
@@ -25,6 +26,9 @@ BASE_DIR = Path(os.environ.get("LABSTEWARD_BASE_DIR", "/opt/labsteward"))
 CONFIG_FILE = Path(os.environ.get("LABSTEWARD_CONFIG_FILE", "/etc/labsteward/config.json"))
 CLIENT_SECRETS_DIR = Path(
     os.environ.get("LABSTEWARD_CLIENT_SECRETS_DIR", "/etc/labsteward/secrets/clients")
+)
+OAUTH_TOKEN_FILE = Path(
+    os.environ.get("LABSTEWARD_OAUTH_TOKEN_FILE", "/etc/labsteward/secrets/oauth-tokens.json")
 )
 VERSION_FILE = Path(os.environ.get("LABSTEWARD_VERSION_FILE", str(BASE_DIR / "VERSION")))
 DEFAULT_TRANSPORT_CONFIG = Path(
@@ -106,27 +110,63 @@ def authenticate_client(token: str, source: str) -> str | None:
     candidate = hashlib.sha256(token.encode("utf-8")).hexdigest()
     matched_id: str | None = None
     matched_sources: object = None
-    # Compare every enabled verifier so timing does not reveal its position.
-    for client_id, client in sorted(clients.items()):
-        if not isinstance(client_id, str) or not isinstance(client, dict):
-            continue
-        digest = "0" * 64
-        try:
-            record = read_object(CLIENT_SECRETS_DIR / f"{client_id}.json")
-            stored = record.get("digest")
+    if token.startswith("lst_"):
+        # Compare every legacy verifier so timing does not reveal its position.
+        for client_id, client in sorted(clients.items()):
+            if not isinstance(client_id, str) or not isinstance(client, dict):
+                continue
+            digest = "0" * 64
+            try:
+                record = read_object(CLIENT_SECRETS_DIR / f"{client_id}.json")
+                stored = record.get("digest")
+                if (
+                    record.get("schema") == 1
+                    and record.get("algorithm") == "sha256"
+                    and isinstance(stored, str)
+                    and re.fullmatch(r"[a-f0-9]{64}", stored)
+                ):
+                    digest = stored
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
+            token_matches = hmac.compare_digest(candidate, digest)
             if (
-                record.get("schema") == 1
-                and record.get("algorithm") == "sha256"
-                and isinstance(stored, str)
-                and re.fullmatch(r"[a-f0-9]{64}", stored)
+                token_matches
+                and client.get("enabled") is True
+                and client.get("auth", "legacy_token") == "legacy_token"
             ):
-                digest = stored
+                matched_id = client_id
+                matched_sources = client.get("sources")
+    elif token.startswith("lsa_"):
+        now = int(time.time())
+        try:
+            snapshot = read_object(OAUTH_TOKEN_FILE)
+            entries = snapshot.get("tokens", []) if snapshot.get("schema") == 1 else []
         except (OSError, ValueError, json.JSONDecodeError):
-            pass
-        token_matches = hmac.compare_digest(candidate, digest)
-        if token_matches and client.get("enabled") is True:
-            matched_id = client_id
-            matched_sources = client.get("sources")
+            entries = []
+        if isinstance(entries, list):
+            for entry in entries:
+                digest = "0" * 64
+                client_id = ""
+                expiry = 0
+                if isinstance(entry, dict):
+                    stored = entry.get("digest")
+                    if isinstance(stored, str) and re.fullmatch(r"[a-f0-9]{64}", stored):
+                        digest = stored
+                    if isinstance(entry.get("client"), str):
+                        client_id = entry["client"]
+                    if isinstance(entry.get("expires_at"), int):
+                        expiry = entry["expires_at"]
+                token_matches = hmac.compare_digest(candidate, digest)
+                client = clients.get(client_id)
+                if (
+                    token_matches
+                    and expiry > now
+                    and isinstance(client, dict)
+                    and client.get("enabled") is True
+                    and client.get("auth") == "oauth"
+                ):
+                    matched_id = client_id
+                    matched_sources = client.get("sources")
     if matched_id is None or not source_allowed(source, matched_sources):
         return None
     return matched_id
@@ -136,12 +176,14 @@ def parse_bearer(value: str | None) -> str | None:
     if not value or not value.startswith("Bearer "):
         return None
     token = value[7:]
-    if not re.fullmatch(r"lst_[A-Za-z0-9_-]{43}", token):
+    if not re.fullmatch(r"(?:lst|lsa)_[A-Za-z0-9_-]{43}", token):
         return None
     return token
 
 
-def validate_transport_config(config: dict[str, Any]) -> tuple[str, int, list[str], Path, Path]:
+def validate_transport_config(
+    config: dict[str, Any],
+) -> tuple[str, int, list[str], Path, Path, str | None, list[str]]:
     if config.get("schema") != 1:
         raise ValueError("unsupported transport configuration schema")
     bind = config.get("bind")
@@ -176,7 +218,49 @@ def validate_transport_config(config: dict[str, Any]) -> tuple[str, int, list[st
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(cert_path, key_path)
-    return str(address), port, normalized_hosts, cert_path, key_path
+    resource = config.get("resource")
+    authorization_servers = config.get("authorization_servers", [])
+    if resource is None and authorization_servers == []:
+        return str(address), port, normalized_hosts, cert_path, key_path, None, []
+    parsed_resource = urlsplit(resource if isinstance(resource, str) else "")
+    try:
+        resource_port = parsed_resource.port
+    except ValueError as exc:
+        raise ValueError("transport OAuth resource is invalid") from exc
+    if (
+        parsed_resource.scheme != "https"
+        or not parsed_resource.hostname
+        or parsed_resource.path != "/mcp"
+        or parsed_resource.query
+        or parsed_resource.fragment
+        or parsed_resource.username
+        or parsed_resource.password
+    ):
+        raise ValueError("transport OAuth resource is invalid")
+    if not isinstance(authorization_servers, list) or not authorization_servers or len(authorization_servers) > 4:
+        raise ValueError("transport OAuth authorization server list is invalid")
+    normalized_authorization_servers = []
+    for item in authorization_servers:
+        parsed = urlsplit(item if isinstance(item, str) else "")
+        try:
+            authorization_port = parsed.port
+        except ValueError as exc:
+            raise ValueError("transport OAuth authorization server is invalid") from exc
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.path not in ("", "/")
+            or parsed.query
+            or parsed.fragment
+            or parsed.username
+            or parsed.password
+        ):
+            raise ValueError("transport OAuth authorization server is invalid")
+        normalized_authorization_servers.append(str(item).rstrip("/"))
+    return (
+        str(address), port, normalized_hosts, cert_path, key_path,
+        str(resource), normalized_authorization_servers,
+    )
 
 
 class SourceRateLimiter:
@@ -210,6 +294,8 @@ class LabStewardHTTPServer(ThreadingHTTPServer):
     def __init__(self, server_address: tuple[str, int], handler: type[BaseHTTPRequestHandler]):
         super().__init__(server_address, handler)
         self.allowed_hosts: list[str] = []
+        self.resource: str | None = None
+        self.authorization_servers: list[str] = []
         self.rate_limiter = SourceRateLimiter()
         self.ssl_context: ssl.SSLContext | None = None
         self.connection_slots = threading.BoundedSemaphore(MAX_CONCURRENT_CONNECTIONS)
@@ -265,7 +351,12 @@ class MCPHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         if authenticate:
-            self.send_header("WWW-Authenticate", 'Bearer realm="labsteward"')
+            challenge = 'Bearer realm="labsteward"'
+            resource = self.server.resource  # type: ignore[attr-defined]
+            if resource:
+                metadata_url = resource.rsplit("/mcp", 1)[0] + "/.well-known/oauth-protected-resource/mcp"
+                challenge += f', resource_metadata="{metadata_url}"'
+            self.send_header("WWW-Authenticate", challenge)
         self.send_header("Connection", "close")
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -297,7 +388,28 @@ class MCPHandler(BaseHTTPRequestHandler):
         return host.lower().rstrip(".") in self.server.allowed_hosts  # type: ignore[attr-defined]
 
     def do_GET(self) -> None:  # noqa: N802
-        self.send_empty(405)
+        source = self.source
+        if not self.server.rate_limiter.allow(source):  # type: ignore[attr-defined]
+            self.send_empty(429)
+            return
+        if not self.host_allowed() or self.headers.get("Origin") is not None:
+            self.send_empty(403)
+            return
+        if self.path in {
+            "/.well-known/oauth-protected-resource",
+            "/.well-known/oauth-protected-resource/mcp",
+        } and self.server.resource:  # type: ignore[attr-defined]
+            self.send_json(
+                200,
+                {
+                    "resource": self.server.resource,  # type: ignore[attr-defined]
+                    "authorization_servers": self.server.authorization_servers,  # type: ignore[attr-defined]
+                    "bearer_methods_supported": ["header"],
+                    "scopes_supported": ["mcp:connect"],
+                },
+            )
+            return
+        self.send_empty(404)
 
     def do_DELETE(self) -> None:  # noqa: N802
         self.send_empty(405)
@@ -441,9 +553,11 @@ class MCPHandler(BaseHTTPRequestHandler):
 
 def build_server(config_path: Path) -> tuple[LabStewardHTTPServer, ssl.SSLContext]:
     config = read_object(config_path)
-    bind, port, allowed_hosts, cert_path, key_path = validate_transport_config(config)
+    bind, port, allowed_hosts, cert_path, key_path, resource, authorization_servers = validate_transport_config(config)
     server = LabStewardHTTPServer((bind, port), MCPHandler)
     server.allowed_hosts = allowed_hosts
+    server.resource = resource
+    server.authorization_servers = authorization_servers
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.options |= ssl.OP_NO_COMPRESSION
@@ -459,12 +573,14 @@ def main() -> int:
     args = parser.parse_args()
     try:
         config = read_object(args.config)
-        bind, port, allowed_hosts, cert_path, key_path = validate_transport_config(config)
+        bind, port, allowed_hosts, cert_path, key_path, resource, authorization_servers = validate_transport_config(config)
         if args.check_config:
             print(f"valid transport configuration for {bind}:{port}")
             return 0
         server = LabStewardHTTPServer((bind, port), MCPHandler)
         server.allowed_hosts = allowed_hosts
+        server.resource = resource
+        server.authorization_servers = authorization_servers
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.options |= ssl.OP_NO_COMPRESSION

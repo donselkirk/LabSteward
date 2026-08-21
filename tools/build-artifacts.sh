@@ -37,6 +37,16 @@ while IFS= read -r line || [[ -n "$line" ]]; do
       cat "${project_root}/src/labsteward_mcp.py"
       printf "EOF_LABSTEWARD_MCP\nchmod 0644 /opt/labsteward/lib/labsteward_mcp.py\n"
       ;;
+    "# LABSTEWARD_INSTALL_ADMIN")
+      printf "cat >/opt/labsteward/lib/labsteward_admin.py <<'EOF_LABSTEWARD_ADMIN'\n"
+      cat "${project_root}/src/labsteward_admin.py"
+      printf "EOF_LABSTEWARD_ADMIN\nchmod 0644 /opt/labsteward/lib/labsteward_admin.py\n"
+      ;;
+    "# LABSTEWARD_INSTALL_BROKER")
+      printf "cat >/opt/labsteward/lib/labsteward_broker.py <<'EOF_LABSTEWARD_BROKER'\n"
+      cat "${project_root}/src/labsteward_broker.py"
+      printf "EOF_LABSTEWARD_BROKER\nchmod 0644 /opt/labsteward/lib/labsteward_broker.py\n"
+      ;;
     "# LABSTEWARD_INSTALL_CATALOG")
       printf "cat >/opt/labsteward/catalog/plugins.json <<'EOF_LABSTEWARD_CATALOG'\n"
       cat "${project_root}/catalog/plugins.json"
@@ -51,6 +61,16 @@ while IFS= read -r line || [[ -n "$line" ]]; do
       printf "cat >/etc/systemd/system/labsteward.service <<'EOF_LABSTEWARD_SERVICE'\n"
       cat "${project_root}/src/labsteward.service"
       printf "EOF_LABSTEWARD_SERVICE\nchmod 0644 /etc/systemd/system/labsteward.service\n"
+      ;;
+    "# LABSTEWARD_INSTALL_ADMIN_SERVICE")
+      printf "cat >/etc/systemd/system/labsteward-admin.service <<'EOF_LABSTEWARD_ADMIN_SERVICE'\n"
+      cat "${project_root}/src/labsteward-admin.service"
+      printf "EOF_LABSTEWARD_ADMIN_SERVICE\nchmod 0644 /etc/systemd/system/labsteward-admin.service\n"
+      ;;
+    "# LABSTEWARD_INSTALL_BROKER_SERVICE")
+      printf "cat >/etc/systemd/system/labsteward-broker.service <<'EOF_LABSTEWARD_BROKER_SERVICE'\n"
+      cat "${project_root}/src/labsteward-broker.service"
+      printf "EOF_LABSTEWARD_BROKER_SERVICE\nchmod 0644 /etc/systemd/system/labsteward-broker.service\n"
       ;;
     *) printf '%s\n' "$line" ;;
   esac

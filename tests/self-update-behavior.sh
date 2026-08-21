@@ -10,6 +10,8 @@ manager_alias="$fixture/bin/labsteward"
 config="$fixture/etc/config.json"
 release="$fixture/release"
 unit="$fixture/systemd/labsteward.service"
+admin_unit="$fixture/systemd/labsteward-admin.service"
+broker_unit="$fixture/systemd/labsteward-broker.service"
 mkdir -p "$base/lib" "$base/catalog" "$base/schemas" "$(dirname "$manager")" \
   "$(dirname "$config")" "$release" "$(dirname "$unit")"
 
@@ -30,11 +32,17 @@ build_release() {
   install -m 0644 "$project_root/src/labsteward_sanitize.py" "$release/labsteward-sanitize.py"
   install -m 0644 "$project_root/src/labsteward_core.py" "$release/labsteward-core.py"
   install -m 0644 "$project_root/src/labsteward_mcp.py" "$release/labsteward-mcp.py"
-  install -m 0644 "$project_root/src/labsteward.service" "$release/labsteward.service"
+  install -m 0644 "$project_root/src/labsteward_admin.py" "$release/labsteward-admin.py"
+  install -m 0644 "$project_root/src/labsteward_broker.py" "$release/labsteward-broker.py"
+  install -m 0644 "$project_root/src/labsteward.service" "$release/labsteward-core.service"
+  install -m 0644 "$project_root/src/labsteward-admin.service" "$release/labsteward-admin.service"
+  install -m 0644 "$project_root/src/labsteward-broker.service" "$release/labsteward-broker.service"
   install -m 0644 "$project_root/catalog/plugins.json" "$release/plugins.json"
   install -m 0644 "$project_root/schemas/config.schema.json" "$release/config.schema.json"
   (cd "$release" && sha256sum VERSION stewctl self-update.sh labsteward-sanitize.py \
-    labsteward-core.py labsteward-mcp.py labsteward.service plugins.json config.schema.json >SHA256SUMS)
+    labsteward-core.py labsteward-mcp.py labsteward-admin.py labsteward-broker.py \
+    labsteward-core.service labsteward-admin.service labsteward-broker.service \
+    plugins.json config.schema.json >SHA256SUMS)
 }
 
 run_update() {
@@ -47,7 +55,12 @@ run_update() {
   LABSTEWARD_VERSION_FILE="$base/VERSION" \
   LABSTEWARD_CORE_FILE="$base/lib/labsteward_core.py" \
   LABSTEWARD_MCP_FILE="$base/lib/labsteward_mcp.py" \
+  LABSTEWARD_ADMIN_FILE="$base/lib/labsteward_admin.py" \
+  LABSTEWARD_BROKER_FILE="$base/lib/labsteward_broker.py" \
   LABSTEWARD_SYSTEMD_UNIT="$unit" \
+  LABSTEWARD_ADMIN_SYSTEMD_UNIT="$admin_unit" \
+  LABSTEWARD_BROKER_SYSTEMD_UNIT="$broker_unit" \
+  LABSTEWARD_ADMIN_GROUP_ID="$(id -g)" \
   LABSTEWARD_SYSTEMCTL="$project_root/tests/mock-systemctl.sh" \
   LABSTEWARD_TEST_SYSTEMCTL_STATE="$fixture/systemctl.state" \
   bash "$base/lib/self-update.sh" "$@"
@@ -71,7 +84,11 @@ grep -qx 'v0.1.1' "$base/VERSION"
 [[ "$(readlink "$manager_alias")" == "$manager" ]]
 [[ -s "$base/lib/labsteward_core.py" ]]
 [[ -s "$base/lib/labsteward_mcp.py" ]]
+[[ -s "$base/lib/labsteward_admin.py" ]]
+[[ -s "$base/lib/labsteward_broker.py" ]]
 [[ -s "$fixture/systemd/labsteward.service" ]]
+[[ -s "$admin_unit" ]]
+[[ -s "$broker_unit" ]]
 assert_no_rollback_dirs
 
 build_release v0.1.1
@@ -93,7 +110,9 @@ assert_no_rollback_dirs
 build_release v0.1.2
 printf '{"schema":999,"plugins":[]}\n' >"$release/plugins.json"
 (cd "$release" && sha256sum VERSION stewctl self-update.sh labsteward-sanitize.py \
-  labsteward-core.py labsteward-mcp.py labsteward.service plugins.json config.schema.json >SHA256SUMS)
+  labsteward-core.py labsteward-mcp.py labsteward-admin.py labsteward-broker.py \
+  labsteward-core.service labsteward-admin.service labsteward-broker.service \
+  plugins.json config.schema.json >SHA256SUMS)
 if run_update >"$fixture/rollback-output" 2>"$fixture/rollback-error"; then
   echo "Post-update validation must reject an invalid catalog." >&2
   exit 1
@@ -106,7 +125,9 @@ assert_no_rollback_dirs
 build_release v0.1.3
 printf 'this is not valid python\n' >"$release/labsteward-sanitize.py"
 (cd "$release" && sha256sum VERSION stewctl self-update.sh labsteward-sanitize.py \
-  labsteward-core.py labsteward-mcp.py labsteward.service plugins.json config.schema.json >SHA256SUMS)
+  labsteward-core.py labsteward-mcp.py labsteward-admin.py labsteward-broker.py \
+  labsteward-core.service labsteward-admin.service labsteward-broker.service \
+  plugins.json config.schema.json >SHA256SUMS)
 if run_update >"$fixture/sanitizer-rollback-output" 2>"$fixture/sanitizer-rollback-error"; then
   echo "Post-update validation must reject an invalid sanitizer." >&2
   exit 1

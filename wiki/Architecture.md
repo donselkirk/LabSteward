@@ -1,6 +1,6 @@
 # Architecture
 
-LabSteward separates six concerns:
+LabSteward separates eight concerns:
 
 1. The Community Scripts-style bootstrap creates an unprivileged Debian LXC.
 2. The root-only `stewctl` manager installs verified core and plugin releases.
@@ -12,6 +12,11 @@ LabSteward separates six concerns:
 6. The unprivileged runtime reads only the configuration and token verifiers it
    needs and exposes sanitized, allowlisted operations over TLS-only Streamable
    HTTP MCP.
+7. A separate unprivileged administrator service handles browser sessions,
+   OAuth enrollment, authorization codes, and rotating refresh tokens.
+8. An AF_UNIX-only root broker accepts a closed set of validated registry
+   operations from the administrator account. It cannot execute commands,
+   retrieve arbitrary files, or fetch URLs.
 
 Plugin installation does not grant access to a server. Registering a server
 does not grant permissions. Granting permissions does not create credentials.
@@ -20,9 +25,11 @@ Each transition is explicit and independently auditable.
 ## Remote client boundary
 
 Remote access is disabled until a transport is explicitly configured. Every
-remote client has a unique high-entropy token, one or more source IP/CIDR
-restrictions, and per-server permission grants. Client grants must be a subset
-of the server's plugin permissions. New clients begin with no server grants.
+remote client has a unique cryptographic identity, one or more source IP/CIDR
+restrictions, and per-server permission grants. Every capability has an Off,
+Read, or Write level. A client sees only servers explicitly assigned to it, and
+only capabilities declared by that server's plugin. New clients begin with no
+managed servers.
 
 The transport obtains the source address from the authenticated socket peer,
 never an untrusted forwarding header, and requires TLS 1.2 or newer. It verifies
@@ -37,8 +44,9 @@ does not replace source restrictions or action grants.
 The initial remote action is `core_status`. Every enabled client can call it
 because it contacts no managed resource and returns only a fixed appliance
 summary. It does not weaken the separate server and plugin permission model.
-Future plugin actions must satisfy both the server permission set and the
-calling client's subset grant.
+Future plugin actions must declare whether they read or mutate state and satisfy
+the calling client's level for the assigned server. Removing a server cascades
+through all client grants.
 
 Administrative commands are:
 
@@ -51,9 +59,12 @@ stewctl client rotate-token CLIENT
 stewctl client revoke CLIENT --yes
 ```
 
-Tokens are shown once during local client creation or rotation. Plaintext tokens
-are never stored by LabSteward; only a verifier readable by the unprivileged
-runtime is retained inside the LXC.
+OAuth is the preferred client identity. Access tokens expire after ten minutes;
+refresh tokens last up to thirty days and rotate on every use. Authorization
+codes are one-time, expire after two minutes, and require PKCE S256. Only token
+hashes are persisted. A per-client authentication generation prevents refresh
+tokens issued before revocation from becoming useful after later re-approval.
+The original one-time bearer tokens remain temporarily supported for migration.
 
 Transport administration is separately explicit:
 
@@ -71,6 +82,25 @@ Certificate creation produces a private CA, a leaf server certificate, and
 protected private keys inside `/etc/labsteward/secrets/tls`. Only the CA
 certificate is exported to clients. Replacing TLS material requires the
 deliberate `--force --yes` combination and client trust must then be updated.
+
+## Administrator boundary
+
+The first administrator is created only from the LXC console with `stewctl
+admin bootstrap`. There is no default account, remote bootstrap, email reset,
+or recovery token. Recovery requires console access. Passwords are stored only
+as salted scrypt verifiers.
+
+The administrator listener is separately configured, source-restricted, and
+disabled by default. It uses a distinct leaf key under
+`/etc/labsteward-admin`, signed by the same private CA. Browser sessions are
+source-bound, idle-expiring, Secure, HttpOnly, and SameSite=Strict. State-changing
+forms require an unguessable CSRF value and an exact Origin match.
+
+The `labsteward-admin` process cannot write `/etc/labsteward` or
+`/opt/labsteward`. Registry mutations cross a group-restricted Unix socket to
+the root broker. Peer credentials are checked with `SO_PEERCRED`, every request
+uses a fixed operation name and bounded JSON schema, and no operation accepts a
+command, filesystem path, or arbitrary fetch target.
 
 ## Core health check
 
@@ -98,9 +128,10 @@ normal self-updates become available when the release source is public.
 ## Planned plugin package contract
 
 Every plugin release will contain a manifest declaring its ID, version, core
-API range, server configuration schema, named permissions, tool names, and
-runtime entry point. The core installer will reject unknown files, unsafe
-paths, incompatible versions, undeclared permissions, and checksum failures.
+API range, server configuration schema, named capabilities with human-readable
+descriptions, action access levels, tool names, and runtime entry point. The core
+installer will reject unknown files, unsafe paths, incompatible versions,
+undeclared permissions, and checksum failures.
 
 Plugins are code and therefore share the gateway's trust boundary. Process
 isolation between plugins may be added later, but it must not be presented as

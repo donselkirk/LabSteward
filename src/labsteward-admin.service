@@ -1,0 +1,45 @@
+[Unit]
+Description=LabSteward OAuth and administrator interface
+Documentation=https://github.com/donselkirk/LabSteward
+After=network-online.target labsteward-broker.service
+Wants=network-online.target
+Requires=labsteward-broker.service
+ConditionPathExists=/etc/labsteward-admin/config.json
+ConditionPathExists=/etc/labsteward-admin/admin.json
+
+[Service]
+Type=simple
+User=labsteward-admin
+Group=labsteward-admin
+ExecStart=/usr/bin/python3 /opt/labsteward/lib/labsteward_admin.py --config /etc/labsteward-admin/config.json
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProtectSystem=strict
+ProcSubset=pid
+ReadWritePaths=/var/lib/labsteward-admin
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+LimitNOFILE=256
+MemoryMax=192M
+TasksMax=64
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

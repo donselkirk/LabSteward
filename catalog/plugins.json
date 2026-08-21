@@ -6,21 +6,24 @@
       "name": "Proxmox VE",
       "status": "planned",
       "description": "Scoped Proxmox node, LXC, storage, task, and backup access.",
-      "permissions": []
+      "permissions": {},
+      "permission_descriptions": {}
     },
     {
       "id": "synology",
       "name": "Synology DSM",
       "status": "planned",
       "description": "Scoped DSM system, pool, volume, disk, snapshot, and job access.",
-      "permissions": []
+      "permissions": {},
+      "permission_descriptions": {}
     },
     {
       "id": "unifi",
       "name": "UniFi",
       "status": "planned",
       "description": "Scoped UniFi site, device, WAN, Wi-Fi, and network access.",
-      "permissions": []
+      "permissions": {},
+      "permission_descriptions": {}
     }
   ]
 }

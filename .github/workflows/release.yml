@@ -5,6 +5,17 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: Release bundle to publish
+        required: true
+        type: choice
+        options: [updater-bridge, core]
+      version:
+        description: Explicit semantic version, including the v prefix
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -34,12 +45,14 @@ jobs:
           bash tests/static-checks.sh
           bash tests/manager-behavior.sh
           python3 tests/sanitizer-behavior.py
+          python3 tests/oauth-behavior.py
           bash tests/self-update-behavior.sh
+          bash tests/updater-bridge-behavior.sh
           shellcheck labsteward.sh ct/labsteward.sh src/self-update.sh tools/*.sh tests/*.sh
           git diff --check
 
   release:
-    if: github.event_name == 'push'
+    if: github.event_name == 'workflow_dispatch'
     needs: validate
     permissions:
       contents: write
@@ -48,57 +61,63 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
-      - name: Resolve an idempotent patch version
-        id: version
+      - name: Validate explicit release request
         shell: bash
         run: |
-          existing="$(git tag --points-at "$GITHUB_SHA" --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | sed -n '1p')"
-          if [[ -n "$existing" ]]; then
-            next="$existing"
-            exists=true
-            previous="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -Fxv "$existing" | sed -n '1p')"
+          [[ "${{ inputs.version }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          if [[ "${{ inputs.release_type }}" == "updater-bridge" ]]; then
+            grep -qx "bridge_version=${{ inputs.version }}" release/COMPATIBILITY
           else
-            previous="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | sed -n '1p')"
-            if [[ -z "$previous" ]]; then
-              next="v0.1.0"
-            else
-              IFS=. read -r major minor patch <<<"${previous#v}"
-              next="v${major}.${minor}.$((patch + 1))"
-            fi
-            exists=false
+            bridge="$(sed -n 's/^bridge_version=//p' release/COMPATIBILITY)"
+            git rev-parse -q --verify "refs/tags/${bridge}" >/dev/null || {
+              echo "Publish the required updater bridge ${bridge} before the core release." >&2
+              exit 1
+            }
           fi
-          echo "version=$next" >>"$GITHUB_OUTPUT"
-          echo "previous=$previous" >>"$GITHUB_OUTPUT"
-          echo "exists=$exists" >>"$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/${{ inputs.version }}" >/dev/null; then
+            echo "Release tag already exists: ${{ inputs.version }}" >&2
+            exit 1
+          fi
       - name: Build checksummed release assets
         run: |
           bash tools/fetch-community-helpers.sh
           bash tools/build-artifacts.sh
-          bash tools/build-release-assets.sh "${{ steps.version.outputs.version }}" dist
+          if [[ "${{ inputs.release_type }}" == "updater-bridge" ]]; then
+            bash tools/build-updater-bridge.sh "${{ inputs.version }}" dist
+          else
+            bash tools/build-release-assets.sh "${{ inputs.version }}" dist
+          fi
       - name: Generate release notes
-        env:
-          PREVIOUS: ${{ steps.version.outputs.previous }}
         run: |
           {
             printf '## Important changes\n\n'
-            if [[ -n "$PREVIOUS" ]]; then
-              git log --reverse --no-merges --pretty='format:- %s (`%h`)' "${PREVIOUS}..${GITHUB_SHA}"
+            if [[ "${{ inputs.release_type }}" == "updater-bridge" ]]; then
+              printf '%s\n' '- Updater-only compatibility bridge; does not enable OAuth or the administrator interface.'
+              printf '%s\n' '- Apply this release before v0.2.0 when upgrading from v0.1.0-v0.1.2.'
             else
-              git log --reverse --no-merges --pretty='format:- %s (`%h`)' "$GITHUB_SHA"
+              previous="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | sed -n '1p')"
+              if [[ -n "$previous" ]]; then
+                git log --reverse --no-merges --pretty='format:- %s (`%h`)' "${previous}..${GITHUB_SHA}"
+              else
+                git log --reverse --no-merges --pretty='format:- %s (`%h`)' "$GITHUB_SHA"
+              fi
             fi
             printf '\n\n## Security model\n\n'
             printf 'Plugins are checksummed release assets. Server targets and permissions remain explicit, and credentials are not included in releases.\n'
           } >dist/RELEASE_NOTES.md
       - name: Publish release
-        if: steps.version.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: gh release create "$VERSION" dist/* --target "$GITHUB_SHA" --title "LabSteward $VERSION" --notes-file dist/RELEASE_NOTES.md
+          VERSION: ${{ inputs.version }}
+        run: |
+          latest_flag=--latest
+          [[ "${{ inputs.release_type }}" == "updater-bridge" ]] && latest_flag=--latest=false
+          gh release create "$VERSION" dist/* --target "$GITHUB_SHA" \
+            --title "LabSteward $VERSION" --notes-file dist/RELEASE_NOTES.md "$latest_flag"
       - name: Verify published assets
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ inputs.version }}
         run: |
           mkdir -p published
           gh release download "$VERSION" --dir published
