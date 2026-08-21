@@ -5,7 +5,7 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fixture="$(mktemp -d)"
 trap 'rm -rf "$fixture"' EXIT
 mkdir -p "$fixture/opt/catalog" "$fixture/opt/lib" "$fixture/opt/schemas" \
-  "$fixture/opt/plugins/synology" "$fixture/opt/plugins/proxmox" "$fixture/etc/secrets/clients" \
+  "$fixture/opt/plugins/synology" "$fixture/opt/plugins/unifi" "$fixture/opt/plugins/proxmox" "$fixture/etc/secrets/clients" \
   "$fixture/etc/secrets/servers" "$fixture/systemd"
 cp "$project_root/catalog/plugins.json" "$fixture/opt/catalog/plugins.json"
 cp "$project_root/src/labsteward_sanitize.py" "$fixture/opt/lib/labsteward_sanitize.py"
@@ -16,6 +16,8 @@ cp "$project_root/src/labsteward_broker.py" "$fixture/opt/lib/labsteward_broker.
 cp "$project_root/src/self-update.sh" "$fixture/opt/lib/self-update.sh"
 cp "$project_root/plugins/synology/manifest.json" "$fixture/opt/plugins/synology/manifest.json"
 cp "$project_root/plugins/synology/plugin.py" "$fixture/opt/plugins/synology/plugin.py"
+cp "$project_root/plugins/unifi/manifest.json" "$fixture/opt/plugins/unifi/manifest.json"
+cp "$project_root/plugins/unifi/plugin.py" "$fixture/opt/plugins/unifi/plugin.py"
 cp "$project_root/plugins/synology/manifest.json" "$fixture/opt/plugins/proxmox/manifest.json"
 cp "$project_root/plugins/synology/plugin.py" "$fixture/opt/plugins/proxmox/plugin.py"
 cp "$project_root/src/labsteward.service" "$fixture/systemd/labsteward.service"
@@ -60,11 +62,17 @@ run_manager status | grep -q '^LabSteward core: healthy$'
 run_manager action run core.status | grep -q '"status": "healthy"'
 run_manager plugin list | grep -q $'^synology\tavailable\tSynology DSM$'
 run_manager plugin install synology | grep -q '^Installed and enabled plugin synology 0.1.0'
+run_manager plugin install unifi | grep -q '^Installed and enabled plugin unifi 0.1.0'
 run_manager server add nas-test --plugin synology --endpoint 'https://nas.example.test:5001' | grep -q '^Added server nas-test'
+run_manager server add network-test --plugin unifi --endpoint 'https://unifi.example.test' | grep -q '^Added server network-test'
 LABSTEWARD_TEST_SERVER_USERNAME='readonly-user' \
   LABSTEWARD_TEST_SERVER_PASSWORD='test-only-password' \
   run_manager server credentials set nas-test | grep -q '^Stored protected Synology credentials'
 [[ "$(stat -c '%a' "$fixture/etc/secrets/servers/nas-test.json")" == "640" ]]
+LABSTEWARD_TEST_UNIFI_API_KEY='test-only-api-key-value' \
+  LABSTEWARD_TEST_UNIFI_SITE_ID='11111111-1111-4111-8111-111111111111' \
+  run_manager server credentials set network-test | grep -q '^Stored protected UniFi credentials'
+[[ "$(stat -c '%a' "$fixture/etc/secrets/servers/network-test.json")" == "640" ]]
 if run_manager plugin remove synology 2>"$fixture/plugin-in-use-error"; then
   echo "An in-use plugin must not be removed." >&2
   exit 1
@@ -150,6 +158,8 @@ grep -q 'already assigned' "$fixture/duplicate-error"
 run_manager client permission set agent1 level-test audit.node=read audit.lxc=write | grep -q '^Set 2 permission(s)'
 run_manager client server add agent1 nas-test | grep -q '^Added server nas-test'
 run_manager client permission set agent1 nas-test system.read=read storage.read=read | grep -q '^Set 2 permission(s)'
+run_manager client server add agent1 network-test | grep -q '^Added server network-test'
+run_manager client permission set agent1 network-test config.read=read diagnostics.read=read clients.read=read firewall.rules=write | grep -q '^Set 4 permission(s)'
 python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["clients"]["agent1"]["grants"]["level-test"] == {"audit.lxc":"write","audit.node":"read"}' "$fixture/etc/config.json"
 if run_manager client permission set agent1 level-test audit.unknown=read 2>"$fixture/permission-error"; then
   echo "An undeclared plugin permission must be rejected." >&2
@@ -173,11 +183,14 @@ fi
 grep -q 'requires --yes' "$fixture/revoke-error"
 run_manager server remove level-test --yes | grep -q '^Removed server registration level-test from 1 client(s)'
 run_manager server remove nas-test --yes | grep -q '^Removed server registration nas-test from 1 client(s)'
+run_manager server remove network-test --yes | grep -q '^Removed server registration network-test from 1 client(s)'
 python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["clients"]["agent1"]["grants"] == {}' "$fixture/etc/config.json"
 [[ -s "$fixture/etc/secrets/servers/nas-test.json" ]]
 run_manager server credentials remove nas-test --yes | grep -q '^Removed protected credentials'
 [[ ! -e "$fixture/etc/secrets/servers/nas-test.json" ]]
 run_manager plugin remove synology | grep -q '^Disabled and removed plugin registration synology'
+run_manager server credentials remove network-test --yes | grep -q '^Removed protected credentials'
+run_manager plugin remove unifi | grep -q '^Disabled and removed plugin registration unifi'
 run_manager client revoke agent1 --yes | grep -q '^Revoked and removed client agent1'
 [[ ! -e "$fixture/etc/secrets/clients/agent1.json" ]]
 run_manager client list | grep -q '^No remote clients are registered.$'

@@ -34,6 +34,13 @@
 - Add verified Synology install/remove controls to the Plugins page, terminal-only
   credential setup guidance on the Servers page, and atomic install/update/
   rollback packaging for the plugin manifest and runtime.
+- Add an official-local-API UniFi Network plugin with sanitized configuration,
+  device diagnostics, specific connected-client context, and firewall policy
+  summaries. Its only mutation is an idempotent, policy-ID-specific syslog
+  logging toggle protected by the Write level of `firewall.rules`.
+- Add terminal-only UniFi API key/site-ID setup, immutable release packaging,
+  rollback support, exact output schemas, and adversarial tests proving that a
+  Read grant cannot invoke the firewall mutation.
 
 - Add a shared, allowlisted action dispatcher with plugin-free `core.status`
   local execution and the remote `core_status` MCP tool.

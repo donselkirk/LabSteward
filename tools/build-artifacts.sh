@@ -56,6 +56,15 @@ while IFS= read -r line || [[ -n "$line" ]]; do
       cat "${project_root}/plugins/synology/plugin.py"
       printf "EOF_LABSTEWARD_SYNOLOGY_PLUGIN\nchmod 0644 /opt/labsteward/plugins/synology/manifest.json /opt/labsteward/plugins/synology/plugin.py\n"
       ;;
+    "# LABSTEWARD_INSTALL_UNIFI_PLUGIN")
+      printf "install -d -m 0755 /opt/labsteward/plugins/unifi\n"
+      printf "cat >/opt/labsteward/plugins/unifi/manifest.json <<'EOF_LABSTEWARD_UNIFI_MANIFEST'\n"
+      cat "${project_root}/plugins/unifi/manifest.json"
+      printf "EOF_LABSTEWARD_UNIFI_MANIFEST\n"
+      printf "cat >/opt/labsteward/plugins/unifi/plugin.py <<'EOF_LABSTEWARD_UNIFI_PLUGIN'\n"
+      cat "${project_root}/plugins/unifi/plugin.py"
+      printf "EOF_LABSTEWARD_UNIFI_PLUGIN\nchmod 0644 /opt/labsteward/plugins/unifi/manifest.json /opt/labsteward/plugins/unifi/plugin.py\n"
+      ;;
     "# LABSTEWARD_INSTALL_CATALOG")
       printf "cat >/opt/labsteward/catalog/plugins.json <<'EOF_LABSTEWARD_CATALOG'\n"
       cat "${project_root}/catalog/plugins.json"

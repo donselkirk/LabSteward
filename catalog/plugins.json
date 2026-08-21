@@ -26,11 +26,22 @@
     },
     {
       "id": "unifi",
-      "name": "UniFi",
-      "status": "planned",
-      "description": "Scoped UniFi site, device, WAN, Wi-Fi, and network access.",
-      "permissions": {},
-      "permission_descriptions": {}
+      "name": "UniFi Network",
+      "status": "available",
+      "version": "0.1.0",
+      "description": "Official local API access for configuration, diagnostics, connected clients, and firewall policy logging.",
+      "permissions": {
+        "clients.read": "read",
+        "config.read": "read",
+        "diagnostics.read": "read",
+        "firewall.rules": "write"
+      },
+      "permission_descriptions": {
+        "clients.read": "Read current connection and access context for a specific connected client.",
+        "config.read": "Read bounded network and WiFi configuration summaries without credentials or WiFi keys.",
+        "diagnostics.read": "Read device state and resource health with bounded diagnostic findings.",
+        "firewall.rules": "Read firewall policy summaries; at Write level, change only one policy's syslog logging state."
+      }
     }
   ]
 }

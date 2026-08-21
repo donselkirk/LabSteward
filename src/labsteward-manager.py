@@ -257,11 +257,14 @@ def require_plugin_contract(plugin_id: str, plugin: dict, manifest: dict) -> Non
         ):
             raise UserError(f"Plugin package permissions do not match the release catalog: {plugin_id}")
     for action, record in manifest_actions.items():
+        permission_record = manifest_permissions.get(record.get("permission")) if isinstance(record, dict) else None
         if (
             not isinstance(action, str)
             or not isinstance(record, dict)
-            or record.get("permission") not in manifest_permissions
-            or record.get("level") != manifest_permissions[record["permission"]].get("level")
+            or not isinstance(permission_record, dict)
+            or record.get("level") not in {"read", "write"}
+            or permission_record.get("level") not in {"read", "write"}
+            or PERMISSION_LEVELS[record["level"]] > PERMISSION_LEVELS[permission_record["level"]]
             or not isinstance(record.get("tool"), str)
         ):
             raise UserError(f"Plugin package actions are invalid: {plugin_id}")
@@ -795,32 +798,48 @@ def command_server_credentials_set(args: argparse.Namespace) -> None:
     server = load_config()["servers"].get(alias)
     if not isinstance(server, dict):
         raise UserError(f"Unknown server alias: {alias}")
-    if server.get("plugin") != "synology":
-        raise UserError("The selected server does not use the Synology plugin")
-    username = os.environ.get("LABSTEWARD_TEST_SERVER_USERNAME")
-    password = os.environ.get("LABSTEWARD_TEST_SERVER_PASSWORD")
-    if username is None:
-        username = input("DSM username: ").strip()
-    if password is None:
-        password = getpass.getpass("DSM password: ")
-    if not username or len(username) > 128 or any(ord(character) < 32 for character in username):
-        raise UserError("DSM username is invalid")
-    if not password or len(password) > 1024 or "\x00" in password:
-        raise UserError("DSM password is invalid")
+    plugin_id = server.get("plugin")
+    if plugin_id not in {"synology", "unifi"}:
+        raise UserError("The selected server plugin has not released credential setup")
     prepare_server_secrets_dir()
+    if plugin_id == "synology":
+        username = os.environ.get("LABSTEWARD_TEST_SERVER_USERNAME")
+        password = os.environ.get("LABSTEWARD_TEST_SERVER_PASSWORD")
+        if username is None:
+            username = input("DSM username: ").strip()
+        if password is None:
+            password = getpass.getpass("DSM password: ")
+        if not username or len(username) > 128 or any(ord(character) < 32 for character in username):
+            raise UserError("DSM username is invalid")
+        if not password or len(password) > 1024 or "\x00" in password:
+            raise UserError("DSM password is invalid")
+        record = {"schema": 1, "username": username, "password": password}
+        label = "Synology"
+    else:
+        api_key = os.environ.get("LABSTEWARD_TEST_UNIFI_API_KEY")
+        site_id = os.environ.get("LABSTEWARD_TEST_UNIFI_SITE_ID")
+        if api_key is None:
+            api_key = getpass.getpass("UniFi API key: ")
+        if site_id is None:
+            site_id = input("UniFi site ID: ").strip()
+        if not 16 <= len(api_key) <= 2048 or "\x00" in api_key:
+            raise UserError("UniFi API key is invalid")
+        if not re.fullmatch(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}",
+            site_id,
+        ):
+            raise UserError("UniFi site ID must be a UUID from Network > Integrations")
+        record = {"schema": 1, "api_key": api_key, "site_id": site_id.lower()}
+        label = "UniFi"
     if args.ca_file:
         source = Path(args.ca_file)
         try:
             ssl.create_default_context(cafile=str(source))
         except (OSError, ssl.SSLError) as exc:
-            raise UserError("DSM CA file is unavailable or invalid") from exc
+            raise UserError(f"{label} CA file is unavailable or invalid") from exc
         install_tls_file(source, server_ca_path(alias), 0o640, service_group=True)
-    save_json(
-        server_credential_path(alias),
-        {"schema": 1, "username": username, "password": password},
-        0o640,
-    )
-    print(f"Stored protected Synology credentials for {alias}; no credential value was displayed.")
+    save_json(server_credential_path(alias), record, 0o640)
+    print(f"Stored protected {label} credentials for {alias}; no credential value was displayed.")
 
 
 def command_server_credentials_remove(args: argparse.Namespace) -> None:
@@ -1090,6 +1109,17 @@ def command_action_run(args: argparse.Namespace) -> None:
         sys.path.pop(0)
     try:
         arguments = {} if args.action == "core.status" else {"server": args.server}
+        if args.action == "unifi.client.summary":
+            if args.client_id is None:
+                raise UserError("unifi.client.summary requires --client-id")
+            arguments["client_id"] = args.client_id
+        elif args.action == "unifi.firewall.logging.set":
+            if args.policy_id is None or args.logging_enabled is None:
+                raise UserError(
+                    "unifi.firewall.logging.set requires --policy-id and --logging-enabled"
+                )
+            arguments["policy_id"] = args.policy_id
+            arguments["logging_enabled"] = args.logging_enabled == "true"
         result = module.dispatch_action(args.action, arguments)
     except module.DispatchError as exc:
         raise UserError(exc.message) from exc
@@ -1540,9 +1570,17 @@ def parser() -> argparse.ArgumentParser:
     run_action = action_commands.add_parser("run")
     run_action.add_argument(
         "action",
-        choices=["core.status", "synology.system.summary", "synology.storage.summary"],
+        choices=[
+            "core.status", "synology.system.summary", "synology.storage.summary",
+            "unifi.configuration.summary", "unifi.diagnostics.summary",
+            "unifi.client.summary", "unifi.clients.list", "unifi.firewall.rules",
+            "unifi.firewall.logging.set",
+        ],
     )
     run_action.add_argument("--server")
+    run_action.add_argument("--client-id")
+    run_action.add_argument("--policy-id")
+    run_action.add_argument("--logging-enabled", choices=["true", "false"])
     run_action.set_defaults(handler=command_action_run)
 
     transport = commands.add_parser("transport")

@@ -39,6 +39,28 @@ SYNOLOGY_ACTIONS = {
     "synology.storage.summary": "storage.read",
     "synology_storage_summary": "storage.read",
 }
+UNIFI_ACTIONS = {
+    "unifi.configuration.summary": ("config.read", "read"),
+    "unifi_configuration_summary": ("config.read", "read"),
+    "unifi.diagnostics.summary": ("diagnostics.read", "read"),
+    "unifi_diagnostics_summary": ("diagnostics.read", "read"),
+    "unifi.client.summary": ("clients.read", "read"),
+    "unifi_client_summary": ("clients.read", "read"),
+    "unifi.clients.list": ("clients.read", "read"),
+    "unifi_clients_list": ("clients.read", "read"),
+    "unifi.firewall.rules": ("firewall.rules", "read"),
+    "unifi_firewall_rules": ("firewall.rules", "read"),
+    "unifi.firewall.logging.set": ("firewall.rules", "write"),
+    "unifi_firewall_logging_set": ("firewall.rules", "write"),
+}
+UNIFI_CANONICAL = {
+    "unifi_configuration_summary": "unifi.configuration.summary",
+    "unifi_diagnostics_summary": "unifi.diagnostics.summary",
+    "unifi_client_summary": "unifi.client.summary",
+    "unifi_clients_list": "unifi.clients.list",
+    "unifi_firewall_rules": "unifi.firewall.rules",
+    "unifi_firewall_logging_set": "unifi.firewall.logging.set",
+}
 
 
 class DispatchError(Exception):
@@ -99,19 +121,23 @@ def _registry_summary() -> dict[str, Any]:
     }
 
 
-def _load_synology_plugin() -> Any:
-    path = PLUGINS_DIR / "synology" / "plugin.py"
+def _load_plugin(plugin_id: str, expected_version: str) -> Any:
+    path = PLUGINS_DIR / plugin_id / "plugin.py"
     try:
-        spec = importlib.util.spec_from_file_location("labsteward_plugin_synology", path)
+        spec = importlib.util.spec_from_file_location(f"labsteward_plugin_{plugin_id}", path)
         if spec is None or spec.loader is None:
             raise ImportError("plugin loader is unavailable")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     except (OSError, ImportError, SyntaxError, AttributeError) as exc:
-        raise DispatchError("plugin_unavailable", "Synology plugin is unavailable") from exc
-    if module.PLUGIN_ID != "synology" or module.PLUGIN_VERSION != "0.1.0":
-        raise DispatchError("plugin_unavailable", "Synology plugin version is incompatible")
+        raise DispatchError("plugin_unavailable", "Requested plugin is unavailable") from exc
+    if module.PLUGIN_ID != plugin_id or module.PLUGIN_VERSION != expected_version:
+        raise DispatchError("plugin_unavailable", "Requested plugin version is incompatible")
     return module
+
+
+def _load_synology_plugin() -> Any:
+    return _load_plugin("synology", "0.1.0")
 
 
 def _synology_enabled(config: dict[str, Any]) -> bool:
@@ -125,16 +151,32 @@ def _synology_tools(config: dict[str, Any]) -> list[dict[str, Any]]:
     return _load_synology_plugin().tool_definitions()
 
 
-def _authorized_synology_target(
-    config: dict[str, Any], alias: object, permission: str, client_id: str | None
+def _unifi_tools(config: dict[str, Any]) -> list[dict[str, Any]]:
+    if not _plugin_enabled(config, "unifi"):
+        return []
+    return _load_plugin("unifi", "0.1.0").tool_definitions()
+
+
+def _plugin_enabled(config: dict[str, Any], plugin_id: str) -> bool:
+    record = config.get("plugins", {}).get(plugin_id)
+    return isinstance(record, dict) and record.get("enabled") is True
+
+
+def _grant_allows(granted: object, required_level: str) -> bool:
+    return granted == "write" or (required_level == "read" and granted == "read")
+
+
+def _authorized_target(
+    config: dict[str, Any], alias: object, plugin_id: str, permission: str,
+    required_level: str, client_id: str | None,
 ) -> tuple[str, dict[str, Any]]:
     if not isinstance(alias, str) or not SERVER_ALIAS.fullmatch(alias):
         raise DispatchError("invalid_arguments", "A valid registered server alias is required")
-    if not _synology_enabled(config):
-        raise DispatchError("plugin_unavailable", "Synology plugin is not installed and enabled")
+    if not _plugin_enabled(config, plugin_id):
+        raise DispatchError("plugin_unavailable", f"{plugin_id.title()} plugin is not installed and enabled")
     server = config.get("servers", {}).get(alias)
-    if not isinstance(server, dict) or server.get("plugin") != "synology":
-        raise DispatchError("unknown_server", "Unknown Synology server")
+    if not isinstance(server, dict) or server.get("plugin") != plugin_id:
+        raise DispatchError("unknown_server", f"Unknown {plugin_id.title()} server")
     if client_id is not None:
         client = config.get("clients", {}).get(client_id)
         grants = client.get("grants", {}) if isinstance(client, dict) else {}
@@ -142,9 +184,18 @@ def _authorized_synology_target(
         if isinstance(levels, list):
             levels = {name: "read" for name in levels if isinstance(name, str)}
         granted = levels.get(permission) if isinstance(levels, dict) else None
-        if granted not in {"read", "write"}:
-            raise DispatchError("permission_denied", "Client is not permitted to read this Synology resource")
+        if not _grant_allows(granted, required_level):
+            raise DispatchError(
+                "permission_denied",
+                f"Client is not permitted to perform this {required_level}-level {plugin_id.title()} action",
+            )
     return alias, server
+
+
+def _authorized_synology_target(
+    config: dict[str, Any], alias: object, permission: str, client_id: str | None
+) -> tuple[str, dict[str, Any]]:
+    return _authorized_target(config, alias, "synology", permission, "read", client_id)
 
 
 def _synology_credentials(alias: str) -> tuple[dict[str, Any], Path | None]:
@@ -207,6 +258,7 @@ def tool_definitions() -> list[dict[str, Any]]:
     ]
     config = _read_object(CONFIG_FILE)
     tools.extend(_synology_tools(config))
+    tools.extend(_unifi_tools(config))
     return tools
 
 
@@ -221,19 +273,50 @@ def dispatch_action(
         # _registry_summary constructs the result from an explicit output allowlist.
         return sanitize_result(_registry_summary())
     permission = SYNOLOGY_ACTIONS.get(action)
-    if permission is None:
+    if permission is not None:
+        if not isinstance(arguments, dict) or set(arguments) != {"server"}:
+            raise DispatchError("invalid_arguments", "Synology actions require only a server alias")
+        config = _read_object(CONFIG_FILE)
+        alias, server = _authorized_synology_target(config, arguments["server"], permission, client_id)
+        credentials, ca_file = _synology_credentials(alias)
+        plugin = _load_synology_plugin()
+        canonical = action.replace("synology_system_summary", "synology.system.summary").replace(
+            "synology_storage_summary", "synology.storage.summary"
+        )
+        try:
+            result = plugin.execute(canonical, server.get("endpoint", ""), credentials, ca_file=ca_file)
+        except plugin.PluginError as exc:
+            raise DispatchError("upstream_error", str(exc)) from exc
+        return sanitize_result(result)
+    unifi_access = UNIFI_ACTIONS.get(action)
+    if unifi_access is None:
         raise DispatchError("unknown_action", "Unknown LabSteward action")
-    if not isinstance(arguments, dict) or set(arguments) != {"server"}:
-        raise DispatchError("invalid_arguments", "Synology actions require only a server alias")
+    required = {
+        "unifi.configuration.summary": {"server"},
+        "unifi.diagnostics.summary": {"server"},
+        "unifi.firewall.rules": {"server"},
+        "unifi.clients.list": {"server"},
+        "unifi.client.summary": {"server", "client_id"},
+        "unifi.firewall.logging.set": {"server", "policy_id", "logging_enabled"},
+    }
+    canonical = UNIFI_CANONICAL.get(action, action)
+    if not isinstance(arguments, dict) or set(arguments) != required[canonical]:
+        raise DispatchError("invalid_arguments", "UniFi action arguments do not match its fixed schema")
+    permission, required_level = unifi_access
     config = _read_object(CONFIG_FILE)
-    alias, server = _authorized_synology_target(config, arguments["server"], permission, client_id)
-    credentials, ca_file = _synology_credentials(alias)
-    plugin = _load_synology_plugin()
-    canonical = action.replace("synology_system_summary", "synology.system.summary").replace(
-        "synology_storage_summary", "synology.storage.summary"
+    alias, server = _authorized_target(
+        config, arguments["server"], "unifi", permission, required_level, client_id
     )
+    credentials, ca_file = _synology_credentials(alias)
+    plugin = _load_plugin("unifi", "0.1.0")
     try:
-        result = plugin.execute(canonical, server.get("endpoint", ""), credentials, ca_file=ca_file)
+        result = plugin.execute(
+            canonical,
+            server.get("endpoint", ""),
+            credentials,
+            {key: value for key, value in arguments.items() if key != "server"},
+            ca_file=ca_file,
+        )
     except plugin.PluginError as exc:
         raise DispatchError("upstream_error", str(exc)) from exc
     return sanitize_result(result)

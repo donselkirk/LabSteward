@@ -13,8 +13,8 @@ plugin is installed.
 The dashboard opens on client management, with separate Servers and Plugins pages.
 Each client explicitly adds only the servers it needs, then gives every plugin
 capability an Off, Read, or Write level.
-Synology is the first available plugin and exposes two read-only, sanitized
-summaries. Proxmox and UniFi remain planned catalog entries.
+Synology and UniFi Network are available as separately installed plugins.
+Proxmox remains a planned catalog entry.
 
 ## Intended install
 
@@ -138,6 +138,43 @@ DSM API names, or write actions.
 The adapter uses DSM's API discovery and session authentication flow, then makes
 only its fixed system/utilization or storage read calls. DSM API login/logout is
 documented in Synology's [DSM Login Web API Guide](https://kb.synology.com/en-us/DG/DSM_Login_Web_API_Guide/2).
+
+## UniFi Network plugin
+
+The UniFi plugin uses the official local Network integration API. Register the
+console as an HTTPS origin, then enter an API key and site UUID at the appliance
+terminal:
+
+```text
+stewctl plugin install unifi
+stewctl server add network1 --plugin unifi --endpoint https://unifi.example.test
+stewctl server credentials set network1 --ca-file /path/to/unifi-ca.crt
+```
+
+Create the key and obtain the site ID through UniFi Network's Integrations page.
+Ubiquiti recommends using the documentation served by the installed Network
+application because available endpoints depend on its version. See Ubiquiti's
+[official API setup guidance](https://help.ui.com/hc/en-us/articles/30076656117655-Getting-Started-with-the-Official-UniFi-API)
+and [Network API reference](https://developer.ui.com/network/v10.3.58).
+
+The initial plugin provides:
+
+- `config.read`: network/VLAN and WiFi broadcast summaries without WiFi keys.
+- `diagnostics.read`: device state, firmware, CPU, memory, uptime and bounded
+  findings such as offline devices or high resource utilization.
+- `clients.read`: a bounded connected-client list for ID discovery plus current
+  connection and access context for one explicit client UUID. The official API
+  does not provide historical per-client byte totals, so these tools do not claim
+  to report historical bandwidth usage.
+- `firewall.rules`: Read returns sanitized policy summaries. Write permits only
+  enabling or disabling syslog logging for one explicit policy UUID through the
+  official partial-update endpoint.
+
+It does not expose WiFi passphrases, MAC addresses, raw filter bodies, arbitrary
+API paths, firewall allow/block changes, policy creation/deletion, or rule
+reordering. Full firewall policy replacement is intentionally deferred because
+the official API requires a complete policy document and does not guarantee
+idempotency for every mutation.
 
 OAuth access tokens live for ten minutes and refresh tokens rotate on every use.
 LabSteward persists only token hashes. Revocation removes active access tokens;

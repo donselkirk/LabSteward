@@ -18,13 +18,16 @@ python3 -c 'compile(open("src/labsteward_mcp.py", encoding="utf-8").read(), "src
 python3 -c 'compile(open("src/labsteward_admin.py", encoding="utf-8").read(), "src/labsteward_admin.py", "exec")'
 python3 -c 'compile(open("src/labsteward_broker.py", encoding="utf-8").read(), "src/labsteward_broker.py", "exec")'
 python3 -c 'compile(open("plugins/synology/plugin.py", encoding="utf-8").read(), "plugins/synology/plugin.py", "exec")'
+python3 -c 'compile(open("plugins/unifi/plugin.py", encoding="utf-8").read(), "plugins/unifi/plugin.py", "exec")'
 python3 tests/sanitizer-behavior.py
 python3 tests/synology-plugin-behavior.py
+python3 tests/unifi-plugin-behavior.py
 python3 tests/mcp-behavior.py
 python3 tests/oauth-behavior.py
 bash tests/updater-bridge-behavior.sh
 python3 -m json.tool catalog/plugins.json >/dev/null
 python3 -m json.tool plugins/synology/manifest.json >/dev/null
+python3 -m json.tool plugins/unifi/manifest.json >/dev/null
 python3 -m json.tool schemas/config.schema.json >/dev/null
 
 grep -q 'var_unprivileged="${var_unprivileged:-1}"' ct/labsteward.sh
@@ -49,6 +52,7 @@ grep -q 'LABSTEWARD_INSTALL_MCP' src/labsteward-install.sh.in
 grep -q 'LABSTEWARD_INSTALL_ADMIN' src/labsteward-install.sh.in
 grep -q 'LABSTEWARD_INSTALL_BROKER' src/labsteward-install.sh.in
 grep -q 'LABSTEWARD_INSTALL_SYNOLOGY_PLUGIN' src/labsteward-install.sh.in
+grep -q 'LABSTEWARD_INSTALL_UNIFI_PLUGIN' src/labsteward-install.sh.in
 grep -q -- '--shell /usr/sbin/nologin labsteward' src/labsteward-install.sh.in
 grep -q 'Plugin is not in the approved release catalog' src/labsteward-manager.py
 grep -q 'Server endpoints must be HTTPS origins without embedded credentials' src/labsteward-manager.py

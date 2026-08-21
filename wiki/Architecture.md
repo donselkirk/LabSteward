@@ -140,6 +140,14 @@ checks the calling client's per-server grant, loads protected credentials, and
 applies the shared sanitizer after the plugin's output allowlist. No caller can
 supply an upstream URL, DSM API name, method, path, or arbitrary parameters.
 
+The UniFi package follows the same model against the official local Network
+integration API. Configuration, diagnostics, connected-client, and firewall
+reads use fixed paths and bounded page sizes. `firewall.rules=read` exposes only
+policy summaries; `firewall.rules=write` additionally permits one fixed PATCH
+operation that changes only `loggingEnabled` on an explicit policy UUID. The
+plugin cannot replace policy match criteria, actions, ordering, or identity, and
+cannot create or delete a rule.
+
 Plugins are code and therefore share the gateway's trust boundary. Process
 isolation between plugins may be added later, but it must not be presented as
 a security boundary until it is tested and enforced.

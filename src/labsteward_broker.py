@@ -180,11 +180,15 @@ def verified_plugin(plugin_id: str) -> dict[str, Any]:
         ):
             raise BrokerError("Plugin package permissions do not match the approved release")
     for action, record in actions.items():
+        permission_record = manifest_permissions.get(record.get("permission")) if isinstance(record, dict) else None
         if (
             not isinstance(action, str)
             or not isinstance(record, dict)
-            or record.get("permission") not in manifest_permissions
-            or record.get("level") != manifest_permissions[record["permission"]].get("level")
+            or not isinstance(permission_record, dict)
+            or record.get("level") not in {"read", "write"}
+            or permission_record.get("level") not in {"read", "write"}
+            or {"read": 1, "write": 2}[record["level"]]
+            > {"read": 1, "write": 2}[permission_record["level"]]
             or not isinstance(record.get("tool"), str)
         ):
             raise BrokerError("Plugin package actions are invalid")

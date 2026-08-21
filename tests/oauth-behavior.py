@@ -120,9 +120,14 @@ def main() -> int:
         admin_config = fixture / "admin.json"
         plugins_dir = fixture / "plugins"
         (plugins_dir / "synology").mkdir(parents=True)
+        (plugins_dir / "unifi").mkdir(parents=True)
         for name in ("manifest.json", "plugin.py"):
             destination = plugins_dir / "synology" / name
             destination.write_bytes((PROJECT_ROOT / "plugins/synology" / name).read_bytes())
+            destination.chmod(0o644)
+        for name in ("manifest.json", "plugin.py"):
+            destination = plugins_dir / "unifi" / name
+            destination.write_bytes((PROJECT_ROOT / "plugins/unifi" / name).read_bytes())
             destination.chmod(0o644)
         write_json(
             config_file,
@@ -168,6 +173,22 @@ def main() -> int:
                         "permission_descriptions": {
                             "storage.read": "Read storage pool, volume, capacity, and aggregate disk health.",
                             "system.read": "Read DSM system health and bounded resource utilization.",
+                        },
+                    },
+                    {
+                        "id": "unifi",
+                        "name": "UniFi Network",
+                        "status": "available",
+                        "version": "0.1.0",
+                        "permissions": {
+                            "clients.read": "read", "config.read": "read",
+                            "diagnostics.read": "read", "firewall.rules": "write",
+                        },
+                        "permission_descriptions": {
+                            "clients.read": "Read current connection and access context for a specific connected client.",
+                            "config.read": "Read bounded network and WiFi configuration summaries without credentials or WiFi keys.",
+                            "diagnostics.read": "Read device state and resource health with bounded diagnostic findings.",
+                            "firewall.rules": "Read firewall policy summaries; at Write level, change only one policy's syslog logging state.",
                         },
                     },
                 ],
@@ -415,6 +436,7 @@ def main() -> int:
             )
             require(status == 200 and b"Proxmox VE" in plugin_page, "plugins must have a separate page")
             require(b"Synology DSM" in plugin_page and b">Install</button>" in plugin_page, "available Synology plugin must be installable")
+            require(b"UniFi Network" in plugin_page and b"firewall.rules" in plugin_page, "available UniFi permissions must render")
             plugin_csrf = re.search(rb'name=csrf value=\'([^\']+)\'', plugin_page)
             install_plugin = form_body({"csrf": plugin_csrf.group(1).decode(), "plugin": "synology"})
             status, _headers, plugin_page = request(

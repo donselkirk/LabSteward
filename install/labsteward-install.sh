@@ -298,11 +298,14 @@ def require_plugin_contract(plugin_id: str, plugin: dict, manifest: dict) -> Non
         ):
             raise UserError(f"Plugin package permissions do not match the release catalog: {plugin_id}")
     for action, record in manifest_actions.items():
+        permission_record = manifest_permissions.get(record.get("permission")) if isinstance(record, dict) else None
         if (
             not isinstance(action, str)
             or not isinstance(record, dict)
-            or record.get("permission") not in manifest_permissions
-            or record.get("level") != manifest_permissions[record["permission"]].get("level")
+            or not isinstance(permission_record, dict)
+            or record.get("level") not in {"read", "write"}
+            or permission_record.get("level") not in {"read", "write"}
+            or PERMISSION_LEVELS[record["level"]] > PERMISSION_LEVELS[permission_record["level"]]
             or not isinstance(record.get("tool"), str)
         ):
             raise UserError(f"Plugin package actions are invalid: {plugin_id}")
@@ -836,32 +839,48 @@ def command_server_credentials_set(args: argparse.Namespace) -> None:
     server = load_config()["servers"].get(alias)
     if not isinstance(server, dict):
         raise UserError(f"Unknown server alias: {alias}")
-    if server.get("plugin") != "synology":
-        raise UserError("The selected server does not use the Synology plugin")
-    username = os.environ.get("LABSTEWARD_TEST_SERVER_USERNAME")
-    password = os.environ.get("LABSTEWARD_TEST_SERVER_PASSWORD")
-    if username is None:
-        username = input("DSM username: ").strip()
-    if password is None:
-        password = getpass.getpass("DSM password: ")
-    if not username or len(username) > 128 or any(ord(character) < 32 for character in username):
-        raise UserError("DSM username is invalid")
-    if not password or len(password) > 1024 or "\x00" in password:
-        raise UserError("DSM password is invalid")
+    plugin_id = server.get("plugin")
+    if plugin_id not in {"synology", "unifi"}:
+        raise UserError("The selected server plugin has not released credential setup")
     prepare_server_secrets_dir()
+    if plugin_id == "synology":
+        username = os.environ.get("LABSTEWARD_TEST_SERVER_USERNAME")
+        password = os.environ.get("LABSTEWARD_TEST_SERVER_PASSWORD")
+        if username is None:
+            username = input("DSM username: ").strip()
+        if password is None:
+            password = getpass.getpass("DSM password: ")
+        if not username or len(username) > 128 or any(ord(character) < 32 for character in username):
+            raise UserError("DSM username is invalid")
+        if not password or len(password) > 1024 or "\x00" in password:
+            raise UserError("DSM password is invalid")
+        record = {"schema": 1, "username": username, "password": password}
+        label = "Synology"
+    else:
+        api_key = os.environ.get("LABSTEWARD_TEST_UNIFI_API_KEY")
+        site_id = os.environ.get("LABSTEWARD_TEST_UNIFI_SITE_ID")
+        if api_key is None:
+            api_key = getpass.getpass("UniFi API key: ")
+        if site_id is None:
+            site_id = input("UniFi site ID: ").strip()
+        if not 16 <= len(api_key) <= 2048 or "\x00" in api_key:
+            raise UserError("UniFi API key is invalid")
+        if not re.fullmatch(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}",
+            site_id,
+        ):
+            raise UserError("UniFi site ID must be a UUID from Network > Integrations")
+        record = {"schema": 1, "api_key": api_key, "site_id": site_id.lower()}
+        label = "UniFi"
     if args.ca_file:
         source = Path(args.ca_file)
         try:
             ssl.create_default_context(cafile=str(source))
         except (OSError, ssl.SSLError) as exc:
-            raise UserError("DSM CA file is unavailable or invalid") from exc
+            raise UserError(f"{label} CA file is unavailable or invalid") from exc
         install_tls_file(source, server_ca_path(alias), 0o640, service_group=True)
-    save_json(
-        server_credential_path(alias),
-        {"schema": 1, "username": username, "password": password},
-        0o640,
-    )
-    print(f"Stored protected Synology credentials for {alias}; no credential value was displayed.")
+    save_json(server_credential_path(alias), record, 0o640)
+    print(f"Stored protected {label} credentials for {alias}; no credential value was displayed.")
 
 
 def command_server_credentials_remove(args: argparse.Namespace) -> None:
@@ -1131,6 +1150,17 @@ def command_action_run(args: argparse.Namespace) -> None:
         sys.path.pop(0)
     try:
         arguments = {} if args.action == "core.status" else {"server": args.server}
+        if args.action == "unifi.client.summary":
+            if args.client_id is None:
+                raise UserError("unifi.client.summary requires --client-id")
+            arguments["client_id"] = args.client_id
+        elif args.action == "unifi.firewall.logging.set":
+            if args.policy_id is None or args.logging_enabled is None:
+                raise UserError(
+                    "unifi.firewall.logging.set requires --policy-id and --logging-enabled"
+                )
+            arguments["policy_id"] = args.policy_id
+            arguments["logging_enabled"] = args.logging_enabled == "true"
         result = module.dispatch_action(args.action, arguments)
     except module.DispatchError as exc:
         raise UserError(exc.message) from exc
@@ -1581,9 +1611,17 @@ def parser() -> argparse.ArgumentParser:
     run_action = action_commands.add_parser("run")
     run_action.add_argument(
         "action",
-        choices=["core.status", "synology.system.summary", "synology.storage.summary"],
+        choices=[
+            "core.status", "synology.system.summary", "synology.storage.summary",
+            "unifi.configuration.summary", "unifi.diagnostics.summary",
+            "unifi.client.summary", "unifi.clients.list", "unifi.firewall.rules",
+            "unifi.firewall.logging.set",
+        ],
     )
     run_action.add_argument("--server")
+    run_action.add_argument("--client-id")
+    run_action.add_argument("--policy-id")
+    run_action.add_argument("--logging-enabled", choices=["true", "false"])
     run_action.set_defaults(handler=command_action_run)
 
     transport = commands.add_parser("transport")
@@ -1744,6 +1782,7 @@ readonly MCP_PATH="${LABSTEWARD_MCP_FILE:-${BASE_DIR}/lib/labsteward_mcp.py}"
 readonly ADMIN_PATH="${LABSTEWARD_ADMIN_FILE:-${BASE_DIR}/lib/labsteward_admin.py}"
 readonly BROKER_PATH="${LABSTEWARD_BROKER_FILE:-${BASE_DIR}/lib/labsteward_broker.py}"
 readonly SYN_PLUGIN_DIR="${LABSTEWARD_SYNOLOGY_PLUGIN_DIR:-${BASE_DIR}/plugins/synology}"
+readonly UNIFI_PLUGIN_DIR="${LABSTEWARD_UNIFI_PLUGIN_DIR:-${BASE_DIR}/plugins/unifi}"
 readonly SYSTEMD_UNIT_PATH="${LABSTEWARD_SYSTEMD_UNIT:-/etc/systemd/system/labsteward.service}"
 readonly ADMIN_SYSTEMD_UNIT_PATH="${LABSTEWARD_ADMIN_SYSTEMD_UNIT:-/etc/systemd/system/labsteward-admin.service}"
 readonly BROKER_SYSTEMD_UNIT_PATH="${LABSTEWARD_BROKER_SYSTEMD_UNIT:-/etc/systemd/system/labsteward-broker.service}"
@@ -1778,6 +1817,7 @@ stage="$(mktemp -d)"
 backup=""
 runtime_bundle=0
 synology_bundle=0
+unifi_bundle=0
 service_was_active=0
 cleanup() {
   rm -rf "$stage"
@@ -1834,6 +1874,7 @@ optional_runtime_assets=(labsteward-core.py labsteward-mcp.py labsteward-admin.p
   labsteward-broker.py labsteward-core.service labsteward-admin.service \
   labsteward-broker.service)
 optional_synology_assets=(synology-plugin.py synology-manifest.json)
+optional_unifi_assets=(unifi-plugin.py unifi-manifest.json)
 for asset in "${required_assets[@]}"; do
   grep -q " ${asset}$" "${stage}/SHA256SUMS" || {
     echo "LabSteward release is missing required checksum metadata for ${asset}." >&2
@@ -1870,6 +1911,22 @@ fi
 if ((synology_count)); then
   synology_bundle=1
   for asset in "${optional_synology_assets[@]}"; do
+    download_asset "${asset_url}/${asset}" "${stage}/${asset}" "$asset"
+  done
+fi
+unifi_count=0
+for asset in "${optional_unifi_assets[@]}"; do
+  if grep -q " ${asset}$" "${stage}/SHA256SUMS"; then
+    unifi_count=$((unifi_count + 1))
+  fi
+done
+if ((unifi_count != 0 && unifi_count != ${#optional_unifi_assets[@]})); then
+  echo "LabSteward release contains an incomplete UniFi plugin bundle." >&2
+  exit 1
+fi
+if ((unifi_count)); then
+  unifi_bundle=1
+  for asset in "${optional_unifi_assets[@]}"; do
     download_asset "${asset_url}/${asset}" "${stage}/${asset}" "$asset"
   done
 fi
@@ -1932,6 +1989,16 @@ rollback() {
       fi
     done
   fi
+  if ((unifi_bundle)); then
+    for item in unifi-plugin.py unifi-manifest.json; do
+      destination="${UNIFI_PLUGIN_DIR}/${item#unifi-}"
+      if [[ -e "${backup}/${item}" ]]; then
+        cp -a "${backup}/${item}" "$destination"
+      else
+        rm -f "$destination"
+      fi
+    done
+  fi
   [[ ! -e "${backup}/plugins.json" ]] || cp -a "${backup}/plugins.json" "${BASE_DIR}/catalog/plugins.json"
   [[ ! -e "${backup}/config.schema.json" ]] || cp -a "${backup}/config.schema.json" "${BASE_DIR}/schemas/config.schema.json"
   [[ ! -e "${backup}/VERSION" ]] || cp -a "${backup}/VERSION" "$VERSION_FILE"
@@ -1963,6 +2030,11 @@ if ((synology_bundle)); then
   [[ ! -e "${SYN_PLUGIN_DIR}/plugin.py" ]] || cp -a "${SYN_PLUGIN_DIR}/plugin.py" "${backup}/synology-plugin.py"
   [[ ! -e "${SYN_PLUGIN_DIR}/manifest.json" ]] || cp -a "${SYN_PLUGIN_DIR}/manifest.json" "${backup}/synology-manifest.json"
 fi
+if ((unifi_bundle)); then
+  install -d -m 0755 "$UNIFI_PLUGIN_DIR"
+  [[ ! -e "${UNIFI_PLUGIN_DIR}/plugin.py" ]] || cp -a "${UNIFI_PLUGIN_DIR}/plugin.py" "${backup}/unifi-plugin.py"
+  [[ ! -e "${UNIFI_PLUGIN_DIR}/manifest.json" ]] || cp -a "${UNIFI_PLUGIN_DIR}/manifest.json" "${backup}/unifi-manifest.json"
+fi
 [[ ! -e "${BASE_DIR}/catalog/plugins.json" ]] || cp -a "${BASE_DIR}/catalog/plugins.json" "${backup}/plugins.json"
 [[ ! -e "${BASE_DIR}/schemas/config.schema.json" ]] || cp -a "${BASE_DIR}/schemas/config.schema.json" "${backup}/config.schema.json"
 [[ ! -e "$VERSION_FILE" ]] || cp -a "$VERSION_FILE" "${backup}/VERSION"
@@ -1991,6 +2063,10 @@ fi
 if ((synology_bundle)); then
   install -m 0644 "${stage}/synology-plugin.py" "${SYN_PLUGIN_DIR}/plugin.py"
   install -m 0644 "${stage}/synology-manifest.json" "${SYN_PLUGIN_DIR}/manifest.json"
+fi
+if ((unifi_bundle)); then
+  install -m 0644 "${stage}/unifi-plugin.py" "${UNIFI_PLUGIN_DIR}/plugin.py"
+  install -m 0644 "${stage}/unifi-manifest.json" "${UNIFI_PLUGIN_DIR}/manifest.json"
 fi
 install -m 0644 "${stage}/plugins.json" "${BASE_DIR}/catalog/plugins.json"
 install -m 0644 "${stage}/config.schema.json" "${BASE_DIR}/schemas/config.schema.json"
@@ -2185,6 +2261,28 @@ SYNOLOGY_ACTIONS = {
     "synology.storage.summary": "storage.read",
     "synology_storage_summary": "storage.read",
 }
+UNIFI_ACTIONS = {
+    "unifi.configuration.summary": ("config.read", "read"),
+    "unifi_configuration_summary": ("config.read", "read"),
+    "unifi.diagnostics.summary": ("diagnostics.read", "read"),
+    "unifi_diagnostics_summary": ("diagnostics.read", "read"),
+    "unifi.client.summary": ("clients.read", "read"),
+    "unifi_client_summary": ("clients.read", "read"),
+    "unifi.clients.list": ("clients.read", "read"),
+    "unifi_clients_list": ("clients.read", "read"),
+    "unifi.firewall.rules": ("firewall.rules", "read"),
+    "unifi_firewall_rules": ("firewall.rules", "read"),
+    "unifi.firewall.logging.set": ("firewall.rules", "write"),
+    "unifi_firewall_logging_set": ("firewall.rules", "write"),
+}
+UNIFI_CANONICAL = {
+    "unifi_configuration_summary": "unifi.configuration.summary",
+    "unifi_diagnostics_summary": "unifi.diagnostics.summary",
+    "unifi_client_summary": "unifi.client.summary",
+    "unifi_clients_list": "unifi.clients.list",
+    "unifi_firewall_rules": "unifi.firewall.rules",
+    "unifi_firewall_logging_set": "unifi.firewall.logging.set",
+}
 
 
 class DispatchError(Exception):
@@ -2245,19 +2343,23 @@ def _registry_summary() -> dict[str, Any]:
     }
 
 
-def _load_synology_plugin() -> Any:
-    path = PLUGINS_DIR / "synology" / "plugin.py"
+def _load_plugin(plugin_id: str, expected_version: str) -> Any:
+    path = PLUGINS_DIR / plugin_id / "plugin.py"
     try:
-        spec = importlib.util.spec_from_file_location("labsteward_plugin_synology", path)
+        spec = importlib.util.spec_from_file_location(f"labsteward_plugin_{plugin_id}", path)
         if spec is None or spec.loader is None:
             raise ImportError("plugin loader is unavailable")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     except (OSError, ImportError, SyntaxError, AttributeError) as exc:
-        raise DispatchError("plugin_unavailable", "Synology plugin is unavailable") from exc
-    if module.PLUGIN_ID != "synology" or module.PLUGIN_VERSION != "0.1.0":
-        raise DispatchError("plugin_unavailable", "Synology plugin version is incompatible")
+        raise DispatchError("plugin_unavailable", "Requested plugin is unavailable") from exc
+    if module.PLUGIN_ID != plugin_id or module.PLUGIN_VERSION != expected_version:
+        raise DispatchError("plugin_unavailable", "Requested plugin version is incompatible")
     return module
+
+
+def _load_synology_plugin() -> Any:
+    return _load_plugin("synology", "0.1.0")
 
 
 def _synology_enabled(config: dict[str, Any]) -> bool:
@@ -2271,16 +2373,32 @@ def _synology_tools(config: dict[str, Any]) -> list[dict[str, Any]]:
     return _load_synology_plugin().tool_definitions()
 
 
-def _authorized_synology_target(
-    config: dict[str, Any], alias: object, permission: str, client_id: str | None
+def _unifi_tools(config: dict[str, Any]) -> list[dict[str, Any]]:
+    if not _plugin_enabled(config, "unifi"):
+        return []
+    return _load_plugin("unifi", "0.1.0").tool_definitions()
+
+
+def _plugin_enabled(config: dict[str, Any], plugin_id: str) -> bool:
+    record = config.get("plugins", {}).get(plugin_id)
+    return isinstance(record, dict) and record.get("enabled") is True
+
+
+def _grant_allows(granted: object, required_level: str) -> bool:
+    return granted == "write" or (required_level == "read" and granted == "read")
+
+
+def _authorized_target(
+    config: dict[str, Any], alias: object, plugin_id: str, permission: str,
+    required_level: str, client_id: str | None,
 ) -> tuple[str, dict[str, Any]]:
     if not isinstance(alias, str) or not SERVER_ALIAS.fullmatch(alias):
         raise DispatchError("invalid_arguments", "A valid registered server alias is required")
-    if not _synology_enabled(config):
-        raise DispatchError("plugin_unavailable", "Synology plugin is not installed and enabled")
+    if not _plugin_enabled(config, plugin_id):
+        raise DispatchError("plugin_unavailable", f"{plugin_id.title()} plugin is not installed and enabled")
     server = config.get("servers", {}).get(alias)
-    if not isinstance(server, dict) or server.get("plugin") != "synology":
-        raise DispatchError("unknown_server", "Unknown Synology server")
+    if not isinstance(server, dict) or server.get("plugin") != plugin_id:
+        raise DispatchError("unknown_server", f"Unknown {plugin_id.title()} server")
     if client_id is not None:
         client = config.get("clients", {}).get(client_id)
         grants = client.get("grants", {}) if isinstance(client, dict) else {}
@@ -2288,9 +2406,18 @@ def _authorized_synology_target(
         if isinstance(levels, list):
             levels = {name: "read" for name in levels if isinstance(name, str)}
         granted = levels.get(permission) if isinstance(levels, dict) else None
-        if granted not in {"read", "write"}:
-            raise DispatchError("permission_denied", "Client is not permitted to read this Synology resource")
+        if not _grant_allows(granted, required_level):
+            raise DispatchError(
+                "permission_denied",
+                f"Client is not permitted to perform this {required_level}-level {plugin_id.title()} action",
+            )
     return alias, server
+
+
+def _authorized_synology_target(
+    config: dict[str, Any], alias: object, permission: str, client_id: str | None
+) -> tuple[str, dict[str, Any]]:
+    return _authorized_target(config, alias, "synology", permission, "read", client_id)
 
 
 def _synology_credentials(alias: str) -> tuple[dict[str, Any], Path | None]:
@@ -2353,6 +2480,7 @@ def tool_definitions() -> list[dict[str, Any]]:
     ]
     config = _read_object(CONFIG_FILE)
     tools.extend(_synology_tools(config))
+    tools.extend(_unifi_tools(config))
     return tools
 
 
@@ -2367,19 +2495,50 @@ def dispatch_action(
         # _registry_summary constructs the result from an explicit output allowlist.
         return sanitize_result(_registry_summary())
     permission = SYNOLOGY_ACTIONS.get(action)
-    if permission is None:
+    if permission is not None:
+        if not isinstance(arguments, dict) or set(arguments) != {"server"}:
+            raise DispatchError("invalid_arguments", "Synology actions require only a server alias")
+        config = _read_object(CONFIG_FILE)
+        alias, server = _authorized_synology_target(config, arguments["server"], permission, client_id)
+        credentials, ca_file = _synology_credentials(alias)
+        plugin = _load_synology_plugin()
+        canonical = action.replace("synology_system_summary", "synology.system.summary").replace(
+            "synology_storage_summary", "synology.storage.summary"
+        )
+        try:
+            result = plugin.execute(canonical, server.get("endpoint", ""), credentials, ca_file=ca_file)
+        except plugin.PluginError as exc:
+            raise DispatchError("upstream_error", str(exc)) from exc
+        return sanitize_result(result)
+    unifi_access = UNIFI_ACTIONS.get(action)
+    if unifi_access is None:
         raise DispatchError("unknown_action", "Unknown LabSteward action")
-    if not isinstance(arguments, dict) or set(arguments) != {"server"}:
-        raise DispatchError("invalid_arguments", "Synology actions require only a server alias")
+    required = {
+        "unifi.configuration.summary": {"server"},
+        "unifi.diagnostics.summary": {"server"},
+        "unifi.firewall.rules": {"server"},
+        "unifi.clients.list": {"server"},
+        "unifi.client.summary": {"server", "client_id"},
+        "unifi.firewall.logging.set": {"server", "policy_id", "logging_enabled"},
+    }
+    canonical = UNIFI_CANONICAL.get(action, action)
+    if not isinstance(arguments, dict) or set(arguments) != required[canonical]:
+        raise DispatchError("invalid_arguments", "UniFi action arguments do not match its fixed schema")
+    permission, required_level = unifi_access
     config = _read_object(CONFIG_FILE)
-    alias, server = _authorized_synology_target(config, arguments["server"], permission, client_id)
-    credentials, ca_file = _synology_credentials(alias)
-    plugin = _load_synology_plugin()
-    canonical = action.replace("synology_system_summary", "synology.system.summary").replace(
-        "synology_storage_summary", "synology.storage.summary"
+    alias, server = _authorized_target(
+        config, arguments["server"], "unifi", permission, required_level, client_id
     )
+    credentials, ca_file = _synology_credentials(alias)
+    plugin = _load_plugin("unifi", "0.1.0")
     try:
-        result = plugin.execute(canonical, server.get("endpoint", ""), credentials, ca_file=ca_file)
+        result = plugin.execute(
+            canonical,
+            server.get("endpoint", ""),
+            credentials,
+            {key: value for key, value in arguments.items() if key != "server"},
+            ca_file=ca_file,
+        )
     except plugin.PluginError as exc:
         raise DispatchError("upstream_error", str(exc)) from exc
     return sanitize_result(result)
@@ -3871,7 +4030,14 @@ class AdminHandler(BaseHTTPRequestHandler):
                     "Add <code>--ca-file /path/to/dsm-ca.crt</code> when DSM uses a private CA. "
                     "Credential values are never accepted or displayed by this page.</p>"
                     if plugin_id == "synology"
-                    else "<p class=notice>This plugin has not released its credential setup yet.</p>"
+                    else (
+                        "<p class=notice>Configure an official Network API key and site ID from the LabSteward terminal with "
+                        f"<code>stewctl server credentials set {html.escape(selected_server)}</code>. "
+                        "Add <code>--ca-file /path/to/unifi-ca.crt</code> when the console uses a private CA. "
+                        "Credential values are never accepted or displayed by this page.</p>"
+                        if plugin_id == "unifi"
+                        else "<p class=notice>This plugin has not released its credential setup yet.</p>"
+                    )
                 )
                 configuration = (
                     f"<section><h2>Configure {html.escape(selected_server)} access</h2>"
@@ -4523,11 +4689,15 @@ def verified_plugin(plugin_id: str) -> dict[str, Any]:
         ):
             raise BrokerError("Plugin package permissions do not match the approved release")
     for action, record in actions.items():
+        permission_record = manifest_permissions.get(record.get("permission")) if isinstance(record, dict) else None
         if (
             not isinstance(action, str)
             or not isinstance(record, dict)
-            or record.get("permission") not in manifest_permissions
-            or record.get("level") != manifest_permissions[record["permission"]].get("level")
+            or not isinstance(permission_record, dict)
+            or record.get("level") not in {"read", "write"}
+            or permission_record.get("level") not in {"read", "write"}
+            or {"read": 1, "write": 2}[record["level"]]
+            > {"read": 1, "write": 2}[permission_record["level"]]
             or not isinstance(record.get("tool"), str)
         ):
             raise BrokerError("Plugin package actions are invalid")
@@ -5486,6 +5656,619 @@ def tool_definitions() -> list[dict[str, Any]]:
     ]
 EOF_LABSTEWARD_SYNOLOGY_PLUGIN
 chmod 0644 /opt/labsteward/plugins/synology/manifest.json /opt/labsteward/plugins/synology/plugin.py
+install -d -m 0755 /opt/labsteward/plugins/unifi
+cat >/opt/labsteward/plugins/unifi/manifest.json <<'EOF_LABSTEWARD_UNIFI_MANIFEST'
+{
+  "schema": 1,
+  "id": "unifi",
+  "name": "UniFi Network",
+  "version": "0.1.0",
+  "core_api": 1,
+  "entrypoint": "plugin.py",
+  "permissions": {
+    "config.read": {
+      "level": "read",
+      "description": "Read bounded network and WiFi configuration summaries without credentials or WiFi keys."
+    },
+    "diagnostics.read": {
+      "level": "read",
+      "description": "Read device state and resource health with bounded diagnostic findings."
+    },
+    "clients.read": {
+      "level": "read",
+      "description": "Read current connection and access context for a specific connected client."
+    },
+    "firewall.rules": {
+      "level": "write",
+      "description": "Read firewall policy summaries; at Write level, change only one policy's syslog logging state."
+    }
+  },
+  "actions": {
+    "unifi.configuration.summary": {
+      "tool": "unifi_configuration_summary",
+      "permission": "config.read",
+      "level": "read"
+    },
+    "unifi.diagnostics.summary": {
+      "tool": "unifi_diagnostics_summary",
+      "permission": "diagnostics.read",
+      "level": "read"
+    },
+    "unifi.client.summary": {
+      "tool": "unifi_client_summary",
+      "permission": "clients.read",
+      "level": "read"
+    },
+    "unifi.clients.list": {
+      "tool": "unifi_clients_list",
+      "permission": "clients.read",
+      "level": "read"
+    },
+    "unifi.firewall.rules": {
+      "tool": "unifi_firewall_rules",
+      "permission": "firewall.rules",
+      "level": "read"
+    },
+    "unifi.firewall.logging.set": {
+      "tool": "unifi_firewall_logging_set",
+      "permission": "firewall.rules",
+      "level": "write"
+    }
+  }
+}
+EOF_LABSTEWARD_UNIFI_MANIFEST
+cat >/opt/labsteward/plugins/unifi/plugin.py <<'EOF_LABSTEWARD_UNIFI_PLUGIN'
+#!/usr/bin/env python3
+"""Fixed UniFi Network adapter for LABSteward's official local API surface."""
+
+from __future__ import annotations
+
+import http.client
+import ipaddress
+import json
+import re
+import ssl
+from pathlib import Path
+from typing import Any, Callable
+from urllib.parse import urlencode, urlsplit
+
+PLUGIN_ID = "unifi"
+PLUGIN_VERSION = "0.1.0"
+MAX_RESPONSE_BYTES = 1024 * 1024
+REQUEST_TIMEOUT_SECONDS = 12
+API_PREFIX = "/proxy/network/integration/v1"
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)
+
+
+class PluginError(Exception):
+    """A safe UniFi error that may be returned to a caller."""
+
+
+def _text(value: object, maximum: int = 120) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = " ".join(value.split())
+    return normalized[:maximum] if normalized else None
+
+
+def _uuid(value: object, label: str) -> str:
+    if not isinstance(value, str) or not UUID.fullmatch(value):
+        raise PluginError(f"A valid UniFi {label} is required")
+    return value.lower()
+
+
+def _number(value: object, minimum: float = 0, maximum: float = 10**18) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    result = float(value)
+    return round(result, 1) if minimum <= result <= maximum else None
+
+
+def _integer(value: object, maximum: int = 10**18) -> int | None:
+    result = _number(value, maximum=maximum)
+    return int(result) if result is not None else None
+
+
+def _bool(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _dict(value: object) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _page(value: object, maximum: int = 200) -> list[dict[str, Any]]:
+    data = value.get("data") if isinstance(value, dict) else None
+    if not isinstance(data, list):
+        raise PluginError("UniFi Network returned an invalid paginated response")
+    return [item for item in data[:maximum] if isinstance(item, dict)]
+
+
+def _credentials(value: object) -> tuple[str, str]:
+    if not isinstance(value, dict) or value.get("schema") != 1:
+        raise PluginError("UniFi credentials are not configured")
+    api_key = value.get("api_key")
+    site_id = value.get("site_id")
+    if not isinstance(api_key, str) or not 16 <= len(api_key) <= 2048 or "\x00" in api_key:
+        raise PluginError("UniFi credentials are not configured")
+    return api_key, _uuid(site_id, "site ID")
+
+
+class UnifiClient:
+    """HTTPS-only client exposing only fixed Network integration API requests."""
+
+    def __init__(self, endpoint: str, api_key: str, *, ca_file: Path | None = None):
+        parsed = urlsplit(endpoint)
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise PluginError("UniFi endpoint is invalid") from exc
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise PluginError("UniFi endpoint must be an HTTPS origin")
+        try:
+            context = ssl.create_default_context(cafile=str(ca_file) if ca_file else None)
+        except (OSError, ssl.SSLError) as exc:
+            raise PluginError("UniFi TLS trust is unavailable or invalid") from exc
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        self.connection = http.client.HTTPSConnection(
+            parsed.hostname,
+            port or 443,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+            context=context,
+        )
+        self.api_key = api_key
+
+    def close(self) -> None:
+        self.connection.close()
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: dict[str, object] | None = None,
+        body: dict[str, object] | None = None,
+    ) -> dict[str, Any]:
+        if method not in {"GET", "PATCH"} or not path.startswith("/v1/") or ".." in path:
+            raise PluginError("UniFi API request is not allowed")
+        target = API_PREFIX + path
+        if query:
+            target += "?" + urlencode(query)
+        encoded = json.dumps(body, separators=(",", ":")).encode() if body is not None else None
+        headers = {"Accept": "application/json", "X-API-Key": self.api_key}
+        if encoded is not None:
+            headers["Content-Type"] = "application/json"
+        try:
+            self.connection.request(method, target, body=encoded, headers=headers)
+            response = self.connection.getresponse()
+            raw = response.read(MAX_RESPONSE_BYTES + 1)
+        except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+            raise PluginError("Unable to reach the UniFi Network API securely") from exc
+        if response.status not in {200, 201} or len(raw) > MAX_RESPONSE_BYTES:
+            raise PluginError("UniFi Network rejected the fixed API request")
+        try:
+            payload = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise PluginError("UniFi Network returned invalid JSON") from exc
+        if not isinstance(payload, dict):
+            raise PluginError("UniFi Network returned invalid result data")
+        return payload
+
+    def get(self, path: str, *, query: dict[str, object] | None = None) -> dict[str, Any]:
+        return self.request("GET", path, query=query)
+
+    def patch(self, path: str, body: dict[str, object]) -> dict[str, Any]:
+        return self.request("PATCH", path, body=body)
+
+
+def _network(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": _text(item.get("id"), 64),
+        "name": _text(item.get("name"), 120),
+        "enabled": _bool(item.get("enabled")),
+        "default": _bool(item.get("default")),
+        "management": _text(item.get("management"), 32),
+        "vlan_id": _integer(item.get("vlanId"), 4009),
+    }
+
+
+def _wifi(item: dict[str, Any]) -> dict[str, Any]:
+    network = _dict(item.get("network"))
+    security = _dict(item.get("securityConfiguration"))
+    return {
+        "id": _text(item.get("id"), 64),
+        "name": _text(item.get("name"), 120),
+        "enabled": _bool(item.get("enabled")),
+        "type": _text(item.get("type"), 32),
+        "network_id": _text(network.get("id"), 64),
+        "security_type": _text(security.get("type"), 64),
+    }
+
+
+def configuration_output(info: object, networks: object, wifi: object) -> dict[str, Any]:
+    application = _dict(info)
+    return {
+        "application_version": _text(
+            application.get("applicationVersion", application.get("version")), 64
+        ),
+        "networks": [_network(item) for item in _page(networks)],
+        "wifi_broadcasts": [_wifi(item) for item in _page(wifi)],
+    }
+
+
+def _device(item: dict[str, Any], statistics: dict[str, Any]) -> dict[str, Any]:
+    uplink = _dict(statistics.get("uplink"))
+    return {
+        "id": _text(item.get("id"), 64),
+        "name": _text(item.get("name"), 120),
+        "model": _text(item.get("model"), 64),
+        "state": _text(item.get("state"), 40),
+        "firmware_version": _text(item.get("firmwareVersion"), 64),
+        "firmware_updatable": _bool(item.get("firmwareUpdatable")),
+        "uptime_seconds": _integer(statistics.get("uptimeSec")),
+        "cpu_percent": _number(statistics.get("cpuUtilizationPct"), maximum=100),
+        "memory_percent": _number(statistics.get("memoryUtilizationPct"), maximum=100),
+        "uplink_state": _text(uplink.get("state"), 32),
+        "uplink_speed_mbps": _integer(uplink.get("speedMbps"), 10**7),
+    }
+
+
+def diagnostics_output(devices: list[tuple[dict[str, Any], dict[str, Any]]]) -> dict[str, Any]:
+    summaries = [_device(device, statistics) for device, statistics in devices[:64]]
+    findings: list[dict[str, Any]] = []
+    for device in summaries:
+        device_id = device["id"]
+        if device["state"] != "ONLINE":
+            findings.append({
+                "severity": "critical" if device["state"] in {"OFFLINE", "ISOLATED"} else "warning",
+                "code": "device_not_online",
+                "device_id": device_id,
+                "message": f"Device state is {device['state'] or 'unknown'}.",
+            })
+        if device["firmware_updatable"] is True:
+            findings.append({
+                "severity": "info", "code": "firmware_update_available",
+                "device_id": device_id, "message": "A firmware update is available.",
+            })
+        for field, code, label in (
+            ("cpu_percent", "high_cpu", "CPU"),
+            ("memory_percent", "high_memory", "memory"),
+        ):
+            value = device[field]
+            if isinstance(value, (int, float)) and value >= 85:
+                findings.append({
+                    "severity": "warning", "code": code, "device_id": device_id,
+                    "message": f"{label} utilization is at least 85 percent.",
+                })
+    return {
+        "status": "critical" if any(item["severity"] == "critical" for item in findings)
+        else "warning" if any(item["severity"] == "warning" for item in findings)
+        else "healthy",
+        "devices": summaries,
+        "findings": findings[:128],
+    }
+
+
+def client_output(item: object) -> dict[str, Any]:
+    client = _dict(item)
+    access = _dict(client.get("access"))
+    address = client.get("ipAddress")
+    if isinstance(address, str):
+        try:
+            address = str(ipaddress.ip_address(address))
+        except ValueError:
+            address = None
+    else:
+        address = None
+    return {
+        "id": _text(client.get("id"), 64),
+        "name": _text(client.get("name"), 120),
+        "type": _text(client.get("type"), 32),
+        "connected_at": _text(client.get("connectedAt"), 40),
+        "ip_address": address,
+        "uplink_device_id": _text(client.get("uplinkDeviceId"), 64),
+        "access_type": _text(access.get("type"), 32),
+        "authorized": _bool(access.get("authorized")),
+    }
+
+
+def _rule(item: dict[str, Any]) -> dict[str, Any]:
+    source = _dict(item.get("source"))
+    destination = _dict(item.get("destination"))
+    source_filter = _dict(source.get("trafficFilter"))
+    destination_filter = _dict(destination.get("trafficFilter"))
+    action = _dict(item.get("action"))
+    scope = _dict(item.get("ipProtocolScope"))
+    metadata = _dict(item.get("metadata"))
+    states = item.get("connectionStateFilter")
+    return {
+        "id": _text(item.get("id"), 64),
+        "name": _text(item.get("name"), 120),
+        "description": _text(item.get("description"), 240),
+        "enabled": _bool(item.get("enabled")),
+        "index": _integer(item.get("index"), 10**7),
+        "action": _text(action.get("type"), 32),
+        "logging_enabled": _bool(item.get("loggingEnabled")),
+        "origin": _text(metadata.get("origin"), 32),
+        "ip_version": _text(scope.get("ipVersion"), 32),
+        "connection_states": [
+            value for value in states[:8] if isinstance(value, str) and len(value) <= 32
+        ] if isinstance(states, list) else [],
+        "source_zone_id": _text(source.get("zoneId"), 64),
+        "source_filter_type": _text(source_filter.get("type"), 40),
+        "destination_zone_id": _text(destination.get("zoneId"), 64),
+        "destination_filter_type": _text(destination_filter.get("type"), 40),
+    }
+
+
+def firewall_output(value: object) -> dict[str, Any]:
+    return {"rules": [_rule(item) for item in _page(value)]}
+
+
+def execute(
+    action: str,
+    endpoint: str,
+    credentials: object,
+    arguments: dict[str, object],
+    *,
+    ca_file: Path | None = None,
+    client_factory: Callable[..., UnifiClient] = UnifiClient,
+) -> dict[str, Any]:
+    """Execute one fixed official Network API action."""
+
+    allowed = {
+        "unifi.configuration.summary",
+        "unifi.diagnostics.summary",
+        "unifi.client.summary",
+        "unifi.clients.list",
+        "unifi.firewall.rules",
+        "unifi.firewall.logging.set",
+    }
+    if action not in allowed:
+        raise PluginError("Unknown UniFi action")
+    api_key, site_id = _credentials(credentials)
+    client = client_factory(endpoint, api_key, ca_file=ca_file)
+    site_path = f"/v1/sites/{site_id}"
+    try:
+        if action == "unifi.configuration.summary":
+            return configuration_output(
+                client.get("/v1/info"),
+                client.get(f"{site_path}/networks", query={"offset": 0, "limit": 200}),
+                client.get(f"{site_path}/wifi/broadcasts", query={"offset": 0, "limit": 200}),
+            )
+        if action == "unifi.diagnostics.summary":
+            overview = _page(
+                client.get(f"{site_path}/devices", query={"offset": 0, "limit": 64}),
+                maximum=64,
+            )
+            pairs = [
+                (device, client.get(f"{site_path}/devices/{_uuid(device.get('id'), 'device ID')}/statistics/latest"))
+                for device in overview
+            ]
+            return diagnostics_output(pairs)
+        if action == "unifi.client.summary":
+            client_id = _uuid(arguments.get("client_id"), "client ID")
+            return client_output(client.get(f"{site_path}/clients/{client_id}"))
+        if action == "unifi.clients.list":
+            return {
+                "clients": [
+                    client_output(item)
+                    for item in _page(
+                        client.get(f"{site_path}/clients", query={"offset": 0, "limit": 200})
+                    )
+                ]
+            }
+        if action == "unifi.firewall.rules":
+            return firewall_output(
+                client.get(f"{site_path}/firewall/policies", query={"offset": 0, "limit": 200})
+            )
+        policy_id = _uuid(arguments.get("policy_id"), "firewall policy ID")
+        logging_enabled = arguments.get("logging_enabled")
+        if not isinstance(logging_enabled, bool):
+            raise PluginError("A boolean logging state is required")
+        policy_path = f"{site_path}/firewall/policies/{policy_id}"
+        current = client.get(policy_path)
+        current_summary = _rule(current)
+        if current_summary["origin"] != "USER_DEFINED":
+            raise PluginError("Only a user-defined UniFi firewall policy may be updated")
+        if current_summary["logging_enabled"] is logging_enabled:
+            return {"updated": False, "rule": current_summary}
+        updated = client.patch(
+            policy_path,
+            {"loggingEnabled": logging_enabled},
+        )
+        return {"updated": True, "rule": _rule(updated)}
+    finally:
+        client.close()
+
+
+def tool_definitions() -> list[dict[str, Any]]:
+    server = {
+        "type": "string", "pattern": "^[a-z][a-z0-9._-]{0,63}$",
+    }
+    uuid = {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+    }
+    read_annotations = {
+        "readOnlyHint": True, "destructiveHint": False,
+        "idempotentHint": True, "openWorldHint": False,
+    }
+    write_annotations = {
+        "readOnlyHint": False, "destructiveHint": False,
+        "idempotentHint": True, "openWorldHint": False,
+    }
+    common = {
+        "type": "object", "additionalProperties": False,
+        "required": ["server"], "properties": {"server": server},
+    }
+    nullable_string = {"type": ["string", "null"]}
+    nullable_integer = {"type": ["integer", "null"]}
+    nullable_number = {"type": ["number", "null"]}
+    nullable_boolean = {"type": ["boolean", "null"]}
+    network_schema = {
+        "type": "object", "additionalProperties": False,
+        "required": ["id", "name", "enabled", "default", "management", "vlan_id"],
+        "properties": {
+            "id": nullable_string, "name": nullable_string, "enabled": nullable_boolean,
+            "default": nullable_boolean, "management": nullable_string,
+            "vlan_id": nullable_integer,
+        },
+    }
+    wifi_schema = {
+        "type": "object", "additionalProperties": False,
+        "required": ["id", "name", "enabled", "type", "network_id", "security_type"],
+        "properties": {
+            "id": nullable_string, "name": nullable_string, "enabled": nullable_boolean,
+            "type": nullable_string, "network_id": nullable_string,
+            "security_type": nullable_string,
+        },
+    }
+    configuration_schema = {
+        "type": "object", "additionalProperties": False,
+        "required": ["application_version", "networks", "wifi_broadcasts"],
+        "properties": {
+            "application_version": nullable_string,
+            "networks": {"type": "array", "maxItems": 200, "items": network_schema},
+            "wifi_broadcasts": {"type": "array", "maxItems": 200, "items": wifi_schema},
+        },
+    }
+    device_schema = {
+        "type": "object", "additionalProperties": False,
+        "required": [
+            "id", "name", "model", "state", "firmware_version", "firmware_updatable",
+            "uptime_seconds", "cpu_percent", "memory_percent", "uplink_state",
+            "uplink_speed_mbps",
+        ],
+        "properties": {
+            "id": nullable_string, "name": nullable_string, "model": nullable_string,
+            "state": nullable_string, "firmware_version": nullable_string,
+            "firmware_updatable": nullable_boolean, "uptime_seconds": nullable_integer,
+            "cpu_percent": nullable_number, "memory_percent": nullable_number,
+            "uplink_state": nullable_string, "uplink_speed_mbps": nullable_integer,
+        },
+    }
+    finding_schema = {
+        "type": "object", "additionalProperties": False,
+        "required": ["severity", "code", "device_id", "message"],
+        "properties": {
+            "severity": {"enum": ["info", "warning", "critical"]},
+            "code": {"type": "string"}, "device_id": nullable_string,
+            "message": {"type": "string"},
+        },
+    }
+    diagnostics_schema = {
+        "type": "object", "additionalProperties": False,
+        "required": ["status", "devices", "findings"],
+        "properties": {
+            "status": {"enum": ["healthy", "warning", "critical"]},
+            "devices": {"type": "array", "maxItems": 64, "items": device_schema},
+            "findings": {"type": "array", "maxItems": 128, "items": finding_schema},
+        },
+    }
+    client_schema = {
+        "type": "object", "additionalProperties": False,
+        "required": [
+            "id", "name", "type", "connected_at", "ip_address", "uplink_device_id",
+            "access_type", "authorized",
+        ],
+        "properties": {
+            "id": nullable_string, "name": nullable_string, "type": nullable_string,
+            "connected_at": nullable_string, "ip_address": nullable_string,
+            "uplink_device_id": nullable_string, "access_type": nullable_string,
+            "authorized": nullable_boolean,
+        },
+    }
+    clients_schema = {
+        "type": "object", "additionalProperties": False,
+        "required": ["clients"],
+        "properties": {
+            "clients": {"type": "array", "maxItems": 200, "items": client_schema},
+        },
+    }
+    rule_schema = {
+        "type": "object", "additionalProperties": False,
+        "required": [
+            "id", "name", "description", "enabled", "index", "action",
+            "logging_enabled", "origin", "ip_version", "connection_states",
+            "source_zone_id", "source_filter_type", "destination_zone_id",
+            "destination_filter_type",
+        ],
+        "properties": {
+            "id": nullable_string, "name": nullable_string, "description": nullable_string,
+            "enabled": nullable_boolean, "index": nullable_integer, "action": nullable_string,
+            "logging_enabled": nullable_boolean, "origin": nullable_string,
+            "ip_version": nullable_string,
+            "connection_states": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
+            "source_zone_id": nullable_string, "source_filter_type": nullable_string,
+            "destination_zone_id": nullable_string,
+            "destination_filter_type": nullable_string,
+        },
+    }
+    firewall_schema = {
+        "type": "object", "additionalProperties": False,
+        "required": ["rules"],
+        "properties": {"rules": {"type": "array", "maxItems": 200, "items": rule_schema}},
+    }
+    output_schemas = {
+        "unifi_configuration_summary": configuration_schema,
+        "unifi_diagnostics_summary": diagnostics_schema,
+        "unifi_clients_list": clients_schema,
+        "unifi_firewall_rules": firewall_schema,
+    }
+    tools = []
+    for name, title, description in (
+        ("unifi_configuration_summary", "UniFi configuration summary", "Read sanitized network and WiFi configuration summaries."),
+        ("unifi_diagnostics_summary", "UniFi diagnostic summary", "Diagnose bounded device state, firmware, CPU, memory, and uplink findings."),
+        ("unifi_clients_list", "UniFi connected clients", "List bounded current client connection and access summaries for client-ID discovery."),
+        ("unifi_firewall_rules", "UniFi firewall rules", "Read sanitized firewall policy summaries without raw filter payloads."),
+    ):
+        tools.append({
+            "name": name, "title": title, "description": description,
+            "inputSchema": common, "outputSchema": output_schemas[name],
+            "annotations": read_annotations,
+        })
+    tools.append({
+        "name": "unifi_client_summary",
+        "title": "UniFi connected client summary",
+        "description": "Read current connection and access context for one connected client; historical traffic totals are not available.",
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "required": ["server", "client_id"],
+            "properties": {"server": server, "client_id": uuid},
+        },
+        "outputSchema": client_schema,
+        "annotations": read_annotations,
+    })
+    tools.append({
+        "name": "unifi_firewall_logging_set",
+        "title": "Set UniFi firewall policy logging",
+        "description": "Enable or disable syslog logging on one explicit firewall policy using the official partial-update endpoint.",
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "required": ["server", "policy_id", "logging_enabled"],
+            "properties": {
+                "server": server, "policy_id": uuid, "logging_enabled": {"type": "boolean"},
+            },
+        },
+        "outputSchema": {
+            "type": "object", "additionalProperties": False,
+            "required": ["updated", "rule"],
+            "properties": {"updated": {"type": "boolean"}, "rule": rule_schema},
+        },
+        "annotations": write_annotations,
+    })
+    return tools
+EOF_LABSTEWARD_UNIFI_PLUGIN
+chmod 0644 /opt/labsteward/plugins/unifi/manifest.json /opt/labsteward/plugins/unifi/plugin.py
 cat >/opt/labsteward/catalog/plugins.json <<'EOF_LABSTEWARD_CATALOG'
 {
   "schema": 1,
@@ -5515,11 +6298,22 @@ cat >/opt/labsteward/catalog/plugins.json <<'EOF_LABSTEWARD_CATALOG'
     },
     {
       "id": "unifi",
-      "name": "UniFi",
-      "status": "planned",
-      "description": "Scoped UniFi site, device, WAN, Wi-Fi, and network access.",
-      "permissions": {},
-      "permission_descriptions": {}
+      "name": "UniFi Network",
+      "status": "available",
+      "version": "0.1.0",
+      "description": "Official local API access for configuration, diagnostics, connected clients, and firewall policy logging.",
+      "permissions": {
+        "clients.read": "read",
+        "config.read": "read",
+        "diagnostics.read": "read",
+        "firewall.rules": "write"
+      },
+      "permission_descriptions": {
+        "clients.read": "Read current connection and access context for a specific connected client.",
+        "config.read": "Read bounded network and WiFi configuration summaries without credentials or WiFi keys.",
+        "diagnostics.read": "Read device state and resource health with bounded diagnostic findings.",
+        "firewall.rules": "Read firewall policy summaries; at Write level, change only one policy's syslog logging state."
+      }
     }
   ]
 }

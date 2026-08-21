@@ -88,10 +88,15 @@ def main() -> int:
         server_secrets = fixture / "server-secrets"
         plugins_dir = fixture / "plugins"
         (plugins_dir / "synology").mkdir(parents=True)
+        (plugins_dir / "unifi").mkdir(parents=True)
         server_secrets.mkdir()
         for name in ("manifest.json", "plugin.py"):
             destination = plugins_dir / "synology" / name
             destination.write_bytes((PROJECT_ROOT / "plugins/synology" / name).read_bytes())
+            destination.chmod(0o644)
+        for name in ("manifest.json", "plugin.py"):
+            destination = plugins_dir / "unifi" / name
+            destination.write_bytes((PROJECT_ROOT / "plugins/unifi" / name).read_bytes())
             destination.chmod(0o644)
         transport_file = fixture / "transport.json"
         write_json(
@@ -303,6 +308,57 @@ def main() -> int:
                 status == 200 and response["result"]["isError"] is True  # type: ignore[index]
                 and "credentials" in json.dumps(response).lower(),
                 "a grant must not bypass protected credential configuration",
+            )
+
+            configured["plugins"]["unifi"] = {"enabled": True, "version": "0.1.0"}
+            configured["servers"]["network-test"] = {
+                "plugin": "unifi", "endpoint": "https://unifi.example.test",
+            }
+            configured["clients"]["desktop"]["grants"]["network-test"] = {
+                "firewall.rules": "read"
+            }
+            write_json(config_file, configured)
+            status, response = request(
+                port, context, token,
+                {
+                    "jsonrpc": "2.0", "id": 8, "method": "tools/call",
+                    "params": {
+                        "name": "unifi_firewall_logging_set",
+                        "arguments": {
+                            "server": "network-test",
+                            "policy_id": "44444444-4444-4444-8444-444444444444",
+                            "logging_enabled": True,
+                        },
+                    },
+                },
+            )
+            require(
+                status == 200 and response["result"]["isError"] is True  # type: ignore[index]
+                and "write-level" in json.dumps(response).lower(),
+                "a read-level grant must never authorize a UniFi mutation",
+            )
+            configured["clients"]["desktop"]["grants"]["network-test"] = {
+                "firewall.rules": "write"
+            }
+            write_json(config_file, configured)
+            status, response = request(
+                port, context, token,
+                {
+                    "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                    "params": {
+                        "name": "unifi_firewall_logging_set",
+                        "arguments": {
+                            "server": "network-test",
+                            "policy_id": "44444444-4444-4444-8444-444444444444",
+                            "logging_enabled": True,
+                        },
+                    },
+                },
+            )
+            require(
+                status == 200 and response["result"]["isError"] is True  # type: ignore[index]
+                and "credentials" in json.dumps(response).lower(),
+                "a write grant must still require protected UniFi credentials",
             )
 
             status, _ = request(port, context, "lst_" + "B" * 43, initialize)

@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "id": "unifi",
+  "name": "UniFi Network",
+  "version": "0.1.0",
+  "core_api": 1,
+  "entrypoint": "plugin.py",
+  "permissions": {
+    "config.read": {
+      "level": "read",
+      "description": "Read bounded network and WiFi configuration summaries without credentials or WiFi keys."
+    },
+    "diagnostics.read": {
+      "level": "read",
+      "description": "Read device state and resource health with bounded diagnostic findings."
+    },
+    "clients.read": {
+      "level": "read",
+      "description": "Read current connection and access context for a specific connected client."
+    },
+    "firewall.rules": {
+      "level": "write",
+      "description": "Read firewall policy summaries; at Write level, change only one policy's syslog logging state."
+    }
+  },
+  "actions": {
+    "unifi.configuration.summary": {
+      "tool": "unifi_configuration_summary",
+      "permission": "config.read",
+      "level": "read"
+    },
+    "unifi.diagnostics.summary": {
+      "tool": "unifi_diagnostics_summary",
+      "permission": "diagnostics.read",
+      "level": "read"
+    },
+    "unifi.client.summary": {
+      "tool": "unifi_client_summary",
+      "permission": "clients.read",
+      "level": "read"
+    },
+    "unifi.clients.list": {
+      "tool": "unifi_clients_list",
+      "permission": "clients.read",
+      "level": "read"
+    },
+    "unifi.firewall.rules": {
+      "tool": "unifi_firewall_rules",
+      "permission": "firewall.rules",
+      "level": "read"
+    },
+    "unifi.firewall.logging.set": {
+      "tool": "unifi_firewall_logging_set",
+      "permission": "firewall.rules",
+      "level": "write"
+    }
+  }
+}

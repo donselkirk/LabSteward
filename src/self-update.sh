@@ -10,6 +10,7 @@ readonly MCP_PATH="${LABSTEWARD_MCP_FILE:-${BASE_DIR}/lib/labsteward_mcp.py}"
 readonly ADMIN_PATH="${LABSTEWARD_ADMIN_FILE:-${BASE_DIR}/lib/labsteward_admin.py}"
 readonly BROKER_PATH="${LABSTEWARD_BROKER_FILE:-${BASE_DIR}/lib/labsteward_broker.py}"
 readonly SYN_PLUGIN_DIR="${LABSTEWARD_SYNOLOGY_PLUGIN_DIR:-${BASE_DIR}/plugins/synology}"
+readonly UNIFI_PLUGIN_DIR="${LABSTEWARD_UNIFI_PLUGIN_DIR:-${BASE_DIR}/plugins/unifi}"
 readonly SYSTEMD_UNIT_PATH="${LABSTEWARD_SYSTEMD_UNIT:-/etc/systemd/system/labsteward.service}"
 readonly ADMIN_SYSTEMD_UNIT_PATH="${LABSTEWARD_ADMIN_SYSTEMD_UNIT:-/etc/systemd/system/labsteward-admin.service}"
 readonly BROKER_SYSTEMD_UNIT_PATH="${LABSTEWARD_BROKER_SYSTEMD_UNIT:-/etc/systemd/system/labsteward-broker.service}"
@@ -44,6 +45,7 @@ stage="$(mktemp -d)"
 backup=""
 runtime_bundle=0
 synology_bundle=0
+unifi_bundle=0
 service_was_active=0
 cleanup() {
   rm -rf "$stage"
@@ -100,6 +102,7 @@ optional_runtime_assets=(labsteward-core.py labsteward-mcp.py labsteward-admin.p
   labsteward-broker.py labsteward-core.service labsteward-admin.service \
   labsteward-broker.service)
 optional_synology_assets=(synology-plugin.py synology-manifest.json)
+optional_unifi_assets=(unifi-plugin.py unifi-manifest.json)
 for asset in "${required_assets[@]}"; do
   grep -q " ${asset}$" "${stage}/SHA256SUMS" || {
     echo "LabSteward release is missing required checksum metadata for ${asset}." >&2
@@ -136,6 +139,22 @@ fi
 if ((synology_count)); then
   synology_bundle=1
   for asset in "${optional_synology_assets[@]}"; do
+    download_asset "${asset_url}/${asset}" "${stage}/${asset}" "$asset"
+  done
+fi
+unifi_count=0
+for asset in "${optional_unifi_assets[@]}"; do
+  if grep -q " ${asset}$" "${stage}/SHA256SUMS"; then
+    unifi_count=$((unifi_count + 1))
+  fi
+done
+if ((unifi_count != 0 && unifi_count != ${#optional_unifi_assets[@]})); then
+  echo "LabSteward release contains an incomplete UniFi plugin bundle." >&2
+  exit 1
+fi
+if ((unifi_count)); then
+  unifi_bundle=1
+  for asset in "${optional_unifi_assets[@]}"; do
     download_asset "${asset_url}/${asset}" "${stage}/${asset}" "$asset"
   done
 fi
@@ -198,6 +217,16 @@ rollback() {
       fi
     done
   fi
+  if ((unifi_bundle)); then
+    for item in unifi-plugin.py unifi-manifest.json; do
+      destination="${UNIFI_PLUGIN_DIR}/${item#unifi-}"
+      if [[ -e "${backup}/${item}" ]]; then
+        cp -a "${backup}/${item}" "$destination"
+      else
+        rm -f "$destination"
+      fi
+    done
+  fi
   [[ ! -e "${backup}/plugins.json" ]] || cp -a "${backup}/plugins.json" "${BASE_DIR}/catalog/plugins.json"
   [[ ! -e "${backup}/config.schema.json" ]] || cp -a "${backup}/config.schema.json" "${BASE_DIR}/schemas/config.schema.json"
   [[ ! -e "${backup}/VERSION" ]] || cp -a "${backup}/VERSION" "$VERSION_FILE"
@@ -229,6 +258,11 @@ if ((synology_bundle)); then
   [[ ! -e "${SYN_PLUGIN_DIR}/plugin.py" ]] || cp -a "${SYN_PLUGIN_DIR}/plugin.py" "${backup}/synology-plugin.py"
   [[ ! -e "${SYN_PLUGIN_DIR}/manifest.json" ]] || cp -a "${SYN_PLUGIN_DIR}/manifest.json" "${backup}/synology-manifest.json"
 fi
+if ((unifi_bundle)); then
+  install -d -m 0755 "$UNIFI_PLUGIN_DIR"
+  [[ ! -e "${UNIFI_PLUGIN_DIR}/plugin.py" ]] || cp -a "${UNIFI_PLUGIN_DIR}/plugin.py" "${backup}/unifi-plugin.py"
+  [[ ! -e "${UNIFI_PLUGIN_DIR}/manifest.json" ]] || cp -a "${UNIFI_PLUGIN_DIR}/manifest.json" "${backup}/unifi-manifest.json"
+fi
 [[ ! -e "${BASE_DIR}/catalog/plugins.json" ]] || cp -a "${BASE_DIR}/catalog/plugins.json" "${backup}/plugins.json"
 [[ ! -e "${BASE_DIR}/schemas/config.schema.json" ]] || cp -a "${BASE_DIR}/schemas/config.schema.json" "${backup}/config.schema.json"
 [[ ! -e "$VERSION_FILE" ]] || cp -a "$VERSION_FILE" "${backup}/VERSION"
@@ -257,6 +291,10 @@ fi
 if ((synology_bundle)); then
   install -m 0644 "${stage}/synology-plugin.py" "${SYN_PLUGIN_DIR}/plugin.py"
   install -m 0644 "${stage}/synology-manifest.json" "${SYN_PLUGIN_DIR}/manifest.json"
+fi
+if ((unifi_bundle)); then
+  install -m 0644 "${stage}/unifi-plugin.py" "${UNIFI_PLUGIN_DIR}/plugin.py"
+  install -m 0644 "${stage}/unifi-manifest.json" "${UNIFI_PLUGIN_DIR}/manifest.json"
 fi
 install -m 0644 "${stage}/plugins.json" "${BASE_DIR}/catalog/plugins.json"
 install -m 0644 "${stage}/config.schema.json" "${BASE_DIR}/schemas/config.schema.json"

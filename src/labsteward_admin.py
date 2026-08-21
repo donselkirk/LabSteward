@@ -876,7 +876,14 @@ class AdminHandler(BaseHTTPRequestHandler):
                     "Add <code>--ca-file /path/to/dsm-ca.crt</code> when DSM uses a private CA. "
                     "Credential values are never accepted or displayed by this page.</p>"
                     if plugin_id == "synology"
-                    else "<p class=notice>This plugin has not released its credential setup yet.</p>"
+                    else (
+                        "<p class=notice>Configure an official Network API key and site ID from the LabSteward terminal with "
+                        f"<code>stewctl server credentials set {html.escape(selected_server)}</code>. "
+                        "Add <code>--ca-file /path/to/unifi-ca.crt</code> when the console uses a private CA. "
+                        "Credential values are never accepted or displayed by this page.</p>"
+                        if plugin_id == "unifi"
+                        else "<p class=notice>This plugin has not released its credential setup yet.</p>"
+                    )
                 )
                 configuration = (
                     f"<section><h2>Configure {html.escape(selected_server)} access</h2>"
