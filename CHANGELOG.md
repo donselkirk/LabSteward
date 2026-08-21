@@ -41,6 +41,13 @@
 - Add terminal-only UniFi API key/site-ID setup, immutable release packaging,
   rollback support, exact output schemas, and adversarial tests proving that a
   Read grant cannot invoke the firewall mutation.
+- Add an audit-only Proxmox VE plugin with seven fixed tools for node summaries,
+  LXC/VM inventory, individual guest summaries, storage capacity, recent tasks,
+  and bounded node/guest diagnostics. Protected token setup, explicit schemas,
+  sanitization tests, immutable packaging, and update rollback are included.
+- Document a separate future host executor for lifecycle, share mapping, and
+  trusted installer recipes. The current plugin exposes no shell, arbitrary URL,
+  raw configuration, or mutation capability and cannot be promoted to Write.
 
 - Add a shared, allowlisted action dispatcher with plugin-free `core.status`
   local execution and the remote `core_status` MCP tool.

@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "id": "proxmox",
+  "name": "Proxmox VE",
+  "version": "0.1.0",
+  "core_api": 1,
+  "entrypoint": "plugin.py",
+  "permissions": {
+    "node.read": {
+      "level": "read",
+      "description": "Read bounded Proxmox node health, version, and resource utilization."
+    },
+    "guests.read": {
+      "level": "read",
+      "description": "List and inspect sanitized LXC and virtual-machine state and configuration."
+    },
+    "diagnostics.read": {
+      "level": "read",
+      "description": "Diagnose node, storage, task, LXC, and virtual-machine health from bounded API data."
+    },
+    "storage.read": {
+      "level": "read",
+      "description": "Read bounded Proxmox storage status and capacity without paths or credentials."
+    },
+    "tasks.read": {
+      "level": "read",
+      "description": "Read recent task outcomes without worker identities or raw logs."
+    }
+  },
+  "actions": {
+    "proxmox.node.summary": {"tool": "proxmox_node_summary", "permission": "node.read", "level": "read"},
+    "proxmox.guests.list": {"tool": "proxmox_guests_list", "permission": "guests.read", "level": "read"},
+    "proxmox.guest.summary": {"tool": "proxmox_guest_summary", "permission": "guests.read", "level": "read"},
+    "proxmox.node.diagnostics": {"tool": "proxmox_node_diagnostics", "permission": "diagnostics.read", "level": "read"},
+    "proxmox.guest.diagnostics": {"tool": "proxmox_guest_diagnostics", "permission": "diagnostics.read", "level": "read"},
+    "proxmox.storage.summary": {"tool": "proxmox_storage_summary", "permission": "storage.read", "level": "read"},
+    "proxmox.tasks.recent": {"tool": "proxmox_tasks_recent", "permission": "tasks.read", "level": "read"}
+  }
+}

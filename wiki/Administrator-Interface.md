@@ -17,7 +17,7 @@ account, configures source networks, and enables both administrator services.
   configuration, and removal. Removing a server also removes it from every client.
 - Plugins is a separate page showing the release catalogue, installed state,
   declared permission vocabulary, descriptions, and fixed install/remove actions.
-  Synology and UniFi Network are available; Proxmox remains planned. A plugin cannot be
+  Synology, UniFi Network, and audit-only Proxmox VE are available. A plugin cannot be
   removed while a registered server uses it.
 - Revoking a client immediately invalidates its tokens and removes it from the
   registry and client list. A hidden non-secret generation tombstone prevents an
@@ -28,7 +28,8 @@ account, configures source networks, and enables both administrator services.
 Credential forms are deliberately absent. For a Synology server, Configure
 access displays the exact `stewctl server credentials set` command to run at the
 appliance terminal. Synology prompts for DSM credentials; UniFi prompts for an
-official Network API key and site UUID. No browser request or administrator
+official Network API key and site UUID; Proxmox prompts for an audit-only token
+ID, token secret, and API node name. No browser request or administrator
 response accepts or retrieves a stored server credential.
 
 ## Authentication and recovery

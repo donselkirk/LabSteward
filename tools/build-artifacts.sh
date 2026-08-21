@@ -65,6 +65,15 @@ while IFS= read -r line || [[ -n "$line" ]]; do
       cat "${project_root}/plugins/unifi/plugin.py"
       printf "EOF_LABSTEWARD_UNIFI_PLUGIN\nchmod 0644 /opt/labsteward/plugins/unifi/manifest.json /opt/labsteward/plugins/unifi/plugin.py\n"
       ;;
+    "# LABSTEWARD_INSTALL_PROXMOX_PLUGIN")
+      printf "install -d -m 0755 /opt/labsteward/plugins/proxmox\n"
+      printf "cat >/opt/labsteward/plugins/proxmox/manifest.json <<'EOF_LABSTEWARD_PROXMOX_MANIFEST'\n"
+      cat "${project_root}/plugins/proxmox/manifest.json"
+      printf "EOF_LABSTEWARD_PROXMOX_MANIFEST\n"
+      printf "cat >/opt/labsteward/plugins/proxmox/plugin.py <<'EOF_LABSTEWARD_PROXMOX_PLUGIN'\n"
+      cat "${project_root}/plugins/proxmox/plugin.py"
+      printf "EOF_LABSTEWARD_PROXMOX_PLUGIN\nchmod 0644 /opt/labsteward/plugins/proxmox/manifest.json /opt/labsteward/plugins/proxmox/plugin.py\n"
+      ;;
     "# LABSTEWARD_INSTALL_CATALOG")
       printf "cat >/opt/labsteward/catalog/plugins.json <<'EOF_LABSTEWARD_CATALOG'\n"
       cat "${project_root}/catalog/plugins.json"

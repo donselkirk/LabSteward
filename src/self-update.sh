@@ -11,6 +11,7 @@ readonly ADMIN_PATH="${LABSTEWARD_ADMIN_FILE:-${BASE_DIR}/lib/labsteward_admin.p
 readonly BROKER_PATH="${LABSTEWARD_BROKER_FILE:-${BASE_DIR}/lib/labsteward_broker.py}"
 readonly SYN_PLUGIN_DIR="${LABSTEWARD_SYNOLOGY_PLUGIN_DIR:-${BASE_DIR}/plugins/synology}"
 readonly UNIFI_PLUGIN_DIR="${LABSTEWARD_UNIFI_PLUGIN_DIR:-${BASE_DIR}/plugins/unifi}"
+readonly PROXMOX_PLUGIN_DIR="${LABSTEWARD_PROXMOX_PLUGIN_DIR:-${BASE_DIR}/plugins/proxmox}"
 readonly SYSTEMD_UNIT_PATH="${LABSTEWARD_SYSTEMD_UNIT:-/etc/systemd/system/labsteward.service}"
 readonly ADMIN_SYSTEMD_UNIT_PATH="${LABSTEWARD_ADMIN_SYSTEMD_UNIT:-/etc/systemd/system/labsteward-admin.service}"
 readonly BROKER_SYSTEMD_UNIT_PATH="${LABSTEWARD_BROKER_SYSTEMD_UNIT:-/etc/systemd/system/labsteward-broker.service}"
@@ -46,6 +47,7 @@ backup=""
 runtime_bundle=0
 synology_bundle=0
 unifi_bundle=0
+proxmox_bundle=0
 service_was_active=0
 cleanup() {
   rm -rf "$stage"
@@ -103,6 +105,7 @@ optional_runtime_assets=(labsteward-core.py labsteward-mcp.py labsteward-admin.p
   labsteward-broker.service)
 optional_synology_assets=(synology-plugin.py synology-manifest.json)
 optional_unifi_assets=(unifi-plugin.py unifi-manifest.json)
+optional_proxmox_assets=(proxmox-plugin.py proxmox-manifest.json)
 for asset in "${required_assets[@]}"; do
   grep -q " ${asset}$" "${stage}/SHA256SUMS" || {
     echo "LabSteward release is missing required checksum metadata for ${asset}." >&2
@@ -155,6 +158,22 @@ fi
 if ((unifi_count)); then
   unifi_bundle=1
   for asset in "${optional_unifi_assets[@]}"; do
+    download_asset "${asset_url}/${asset}" "${stage}/${asset}" "$asset"
+  done
+fi
+proxmox_count=0
+for asset in "${optional_proxmox_assets[@]}"; do
+  if grep -q " ${asset}$" "${stage}/SHA256SUMS"; then
+    proxmox_count=$((proxmox_count + 1))
+  fi
+done
+if ((proxmox_count != 0 && proxmox_count != ${#optional_proxmox_assets[@]})); then
+  echo "LabSteward release contains an incomplete Proxmox plugin bundle." >&2
+  exit 1
+fi
+if ((proxmox_count)); then
+  proxmox_bundle=1
+  for asset in "${optional_proxmox_assets[@]}"; do
     download_asset "${asset_url}/${asset}" "${stage}/${asset}" "$asset"
   done
 fi
@@ -227,6 +246,16 @@ rollback() {
       fi
     done
   fi
+  if ((proxmox_bundle)); then
+    for item in proxmox-plugin.py proxmox-manifest.json; do
+      destination="${PROXMOX_PLUGIN_DIR}/${item#proxmox-}"
+      if [[ -e "${backup}/${item}" ]]; then
+        cp -a "${backup}/${item}" "$destination"
+      else
+        rm -f "$destination"
+      fi
+    done
+  fi
   [[ ! -e "${backup}/plugins.json" ]] || cp -a "${backup}/plugins.json" "${BASE_DIR}/catalog/plugins.json"
   [[ ! -e "${backup}/config.schema.json" ]] || cp -a "${backup}/config.schema.json" "${BASE_DIR}/schemas/config.schema.json"
   [[ ! -e "${backup}/VERSION" ]] || cp -a "${backup}/VERSION" "$VERSION_FILE"
@@ -263,6 +292,11 @@ if ((unifi_bundle)); then
   [[ ! -e "${UNIFI_PLUGIN_DIR}/plugin.py" ]] || cp -a "${UNIFI_PLUGIN_DIR}/plugin.py" "${backup}/unifi-plugin.py"
   [[ ! -e "${UNIFI_PLUGIN_DIR}/manifest.json" ]] || cp -a "${UNIFI_PLUGIN_DIR}/manifest.json" "${backup}/unifi-manifest.json"
 fi
+if ((proxmox_bundle)); then
+  install -d -m 0755 "$PROXMOX_PLUGIN_DIR"
+  [[ ! -e "${PROXMOX_PLUGIN_DIR}/plugin.py" ]] || cp -a "${PROXMOX_PLUGIN_DIR}/plugin.py" "${backup}/proxmox-plugin.py"
+  [[ ! -e "${PROXMOX_PLUGIN_DIR}/manifest.json" ]] || cp -a "${PROXMOX_PLUGIN_DIR}/manifest.json" "${backup}/proxmox-manifest.json"
+fi
 [[ ! -e "${BASE_DIR}/catalog/plugins.json" ]] || cp -a "${BASE_DIR}/catalog/plugins.json" "${backup}/plugins.json"
 [[ ! -e "${BASE_DIR}/schemas/config.schema.json" ]] || cp -a "${BASE_DIR}/schemas/config.schema.json" "${backup}/config.schema.json"
 [[ ! -e "$VERSION_FILE" ]] || cp -a "$VERSION_FILE" "${backup}/VERSION"
@@ -295,6 +329,10 @@ fi
 if ((unifi_bundle)); then
   install -m 0644 "${stage}/unifi-plugin.py" "${UNIFI_PLUGIN_DIR}/plugin.py"
   install -m 0644 "${stage}/unifi-manifest.json" "${UNIFI_PLUGIN_DIR}/manifest.json"
+fi
+if ((proxmox_bundle)); then
+  install -m 0644 "${stage}/proxmox-plugin.py" "${PROXMOX_PLUGIN_DIR}/plugin.py"
+  install -m 0644 "${stage}/proxmox-manifest.json" "${PROXMOX_PLUGIN_DIR}/manifest.json"
 fi
 install -m 0644 "${stage}/plugins.json" "${BASE_DIR}/catalog/plugins.json"
 install -m 0644 "${stage}/config.schema.json" "${BASE_DIR}/schemas/config.schema.json"

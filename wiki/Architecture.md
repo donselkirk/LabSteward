@@ -148,6 +148,13 @@ operation that changes only `loggingEnabled` on an explicit policy UUID. The
 plugin cannot replace policy match criteria, actions, ordering, or identity, and
 cannot create or delete a rule.
 
+The Proxmox package is audit-only. It uses fixed GET endpoints for version, node
+status, LXC and virtual-machine state/configuration summaries, storage status,
+and recent tasks. It emits counts instead of mount and network definitions and
+omits raw task logs, storage paths, worker identities, descriptions, and UPIDs.
+Host mutations and third-party installer execution require a separate constrained
+executor; installing the read plugin does not install or authorize that executor.
+
 Plugins are code and therefore share the gateway's trust boundary. Process
 isolation between plugins may be added later, but it must not be presented as
 a security boundary until it is tested and enforced.

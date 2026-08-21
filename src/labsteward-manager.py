@@ -799,7 +799,7 @@ def command_server_credentials_set(args: argparse.Namespace) -> None:
     if not isinstance(server, dict):
         raise UserError(f"Unknown server alias: {alias}")
     plugin_id = server.get("plugin")
-    if plugin_id not in {"synology", "unifi"}:
+    if plugin_id not in {"synology", "unifi", "proxmox"}:
         raise UserError("The selected server plugin has not released credential setup")
     prepare_server_secrets_dir()
     if plugin_id == "synology":
@@ -815,7 +815,7 @@ def command_server_credentials_set(args: argparse.Namespace) -> None:
             raise UserError("DSM password is invalid")
         record = {"schema": 1, "username": username, "password": password}
         label = "Synology"
-    else:
+    elif plugin_id == "unifi":
         api_key = os.environ.get("LABSTEWARD_TEST_UNIFI_API_KEY")
         site_id = os.environ.get("LABSTEWARD_TEST_UNIFI_SITE_ID")
         if api_key is None:
@@ -831,6 +831,24 @@ def command_server_credentials_set(args: argparse.Namespace) -> None:
             raise UserError("UniFi site ID must be a UUID from Network > Integrations")
         record = {"schema": 1, "api_key": api_key, "site_id": site_id.lower()}
         label = "UniFi"
+    else:
+        token_id = os.environ.get("LABSTEWARD_TEST_PROXMOX_TOKEN_ID")
+        token_secret = os.environ.get("LABSTEWARD_TEST_PROXMOX_TOKEN_SECRET")
+        node = os.environ.get("LABSTEWARD_TEST_PROXMOX_NODE")
+        if token_id is None:
+            token_id = input("Proxmox API token ID (user@realm!token): ").strip()
+        if token_secret is None:
+            token_secret = getpass.getpass("Proxmox API token secret: ")
+        if node is None:
+            node = input("Proxmox API node name: ").strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]+@[A-Za-z0-9._-]+![A-Za-z0-9._-]+", token_id or ""):
+            raise UserError("Proxmox API token ID is invalid")
+        if not isinstance(token_secret, str) or not 8 <= len(token_secret) <= 2048 or "\x00" in token_secret:
+            raise UserError("Proxmox API token secret is invalid")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", node or ""):
+            raise UserError("Proxmox API node name is invalid")
+        record = {"schema": 1, "token_id": token_id, "token_secret": token_secret, "node": node}
+        label = "Proxmox"
     if args.ca_file:
         source = Path(args.ca_file)
         try:
@@ -1120,6 +1138,11 @@ def command_action_run(args: argparse.Namespace) -> None:
                 )
             arguments["policy_id"] = args.policy_id
             arguments["logging_enabled"] = args.logging_enabled == "true"
+        elif args.action in {"proxmox.guest.summary", "proxmox.guest.diagnostics"}:
+            if args.kind is None or args.guest_id is None:
+                raise UserError(f"{args.action} requires --kind and --guest-id")
+            arguments["kind"] = args.kind
+            arguments["guest_id"] = args.guest_id
         result = module.dispatch_action(args.action, arguments)
     except module.DispatchError as exc:
         raise UserError(exc.message) from exc
@@ -1575,11 +1598,16 @@ def parser() -> argparse.ArgumentParser:
             "unifi.configuration.summary", "unifi.diagnostics.summary",
             "unifi.client.summary", "unifi.clients.list", "unifi.firewall.rules",
             "unifi.firewall.logging.set",
+            "proxmox.node.summary", "proxmox.guests.list", "proxmox.guest.summary",
+            "proxmox.node.diagnostics", "proxmox.guest.diagnostics",
+            "proxmox.storage.summary", "proxmox.tasks.recent",
         ],
     )
     run_action.add_argument("--server")
     run_action.add_argument("--client-id")
     run_action.add_argument("--policy-id")
+    run_action.add_argument("--kind", choices=["lxc", "qemu"])
+    run_action.add_argument("--guest-id", type=int)
     run_action.add_argument("--logging-enabled", choices=["true", "false"])
     run_action.set_defaults(handler=command_action_run)
 

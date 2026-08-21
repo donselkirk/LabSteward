@@ -882,7 +882,14 @@ class AdminHandler(BaseHTTPRequestHandler):
                         "Add <code>--ca-file /path/to/unifi-ca.crt</code> when the console uses a private CA. "
                         "Credential values are never accepted or displayed by this page.</p>"
                         if plugin_id == "unifi"
-                        else "<p class=notice>This plugin has not released its credential setup yet.</p>"
+                        else (
+                            "<p class=notice>Configure a privilege-separated, audit-only Proxmox API token and node name from the LabSteward terminal with "
+                            f"<code>stewctl server credentials set {html.escape(selected_server)}</code>. "
+                            "Add <code>--ca-file /path/to/proxmox-ca.crt</code> for the node's private CA. "
+                            "Do not grant this token mutation privileges; credential values are never accepted or displayed by this page.</p>"
+                            if plugin_id == "proxmox"
+                            else "<p class=notice>This plugin has not released its credential setup yet.</p>"
+                        )
                     )
                 )
                 configuration = (

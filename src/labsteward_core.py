@@ -61,6 +61,31 @@ UNIFI_CANONICAL = {
     "unifi_firewall_rules": "unifi.firewall.rules",
     "unifi_firewall_logging_set": "unifi.firewall.logging.set",
 }
+PROXMOX_ACTIONS = {
+    "proxmox.node.summary": "node.read",
+    "proxmox_node_summary": "node.read",
+    "proxmox.guests.list": "guests.read",
+    "proxmox_guests_list": "guests.read",
+    "proxmox.guest.summary": "guests.read",
+    "proxmox_guest_summary": "guests.read",
+    "proxmox.node.diagnostics": "diagnostics.read",
+    "proxmox_node_diagnostics": "diagnostics.read",
+    "proxmox.guest.diagnostics": "diagnostics.read",
+    "proxmox_guest_diagnostics": "diagnostics.read",
+    "proxmox.storage.summary": "storage.read",
+    "proxmox_storage_summary": "storage.read",
+    "proxmox.tasks.recent": "tasks.read",
+    "proxmox_tasks_recent": "tasks.read",
+}
+PROXMOX_CANONICAL = {
+    "proxmox_node_summary": "proxmox.node.summary",
+    "proxmox_guests_list": "proxmox.guests.list",
+    "proxmox_guest_summary": "proxmox.guest.summary",
+    "proxmox_node_diagnostics": "proxmox.node.diagnostics",
+    "proxmox_guest_diagnostics": "proxmox.guest.diagnostics",
+    "proxmox_storage_summary": "proxmox.storage.summary",
+    "proxmox_tasks_recent": "proxmox.tasks.recent",
+}
 
 
 class DispatchError(Exception):
@@ -155,6 +180,12 @@ def _unifi_tools(config: dict[str, Any]) -> list[dict[str, Any]]:
     if not _plugin_enabled(config, "unifi"):
         return []
     return _load_plugin("unifi", "0.1.0").tool_definitions()
+
+
+def _proxmox_tools(config: dict[str, Any]) -> list[dict[str, Any]]:
+    if not _plugin_enabled(config, "proxmox"):
+        return []
+    return _load_plugin("proxmox", "0.1.0").tool_definitions()
 
 
 def _plugin_enabled(config: dict[str, Any], plugin_id: str) -> bool:
@@ -259,6 +290,7 @@ def tool_definitions() -> list[dict[str, Any]]:
     config = _read_object(CONFIG_FILE)
     tools.extend(_synology_tools(config))
     tools.extend(_unifi_tools(config))
+    tools.extend(_proxmox_tools(config))
     return tools
 
 
@@ -285,6 +317,29 @@ def dispatch_action(
         )
         try:
             result = plugin.execute(canonical, server.get("endpoint", ""), credentials, ca_file=ca_file)
+        except plugin.PluginError as exc:
+            raise DispatchError("upstream_error", str(exc)) from exc
+        return sanitize_result(result)
+    proxmox_permission = PROXMOX_ACTIONS.get(action)
+    if proxmox_permission is not None:
+        canonical = PROXMOX_CANONICAL.get(action, action)
+        required = {"server", "kind", "guest_id"} if canonical in {
+            "proxmox.guest.summary", "proxmox.guest.diagnostics"
+        } else {"server"}
+        if not isinstance(arguments, dict) or set(arguments) != required:
+            raise DispatchError("invalid_arguments", "Proxmox action arguments do not match its fixed schema")
+        config = _read_object(CONFIG_FILE)
+        alias, server = _authorized_target(
+            config, arguments["server"], "proxmox", proxmox_permission, "read", client_id
+        )
+        credentials, ca_file = _synology_credentials(alias)
+        plugin = _load_plugin("proxmox", "0.1.0")
+        try:
+            result = plugin.execute(
+                canonical, server.get("endpoint", ""), credentials,
+                {key: value for key, value in arguments.items() if key != "server"},
+                ca_file=ca_file,
+            )
         except plugin.PluginError as exc:
             raise DispatchError("upstream_error", str(exc)) from exc
         return sanitize_result(result)

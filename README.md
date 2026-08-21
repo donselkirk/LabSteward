@@ -13,8 +13,8 @@ plugin is installed.
 The dashboard opens on client management, with separate Servers and Plugins pages.
 Each client explicitly adds only the servers it needs, then gives every plugin
 capability an Off, Read, or Write level.
-Synology and UniFi Network are available as separately installed plugins.
-Proxmox remains a planned catalog entry.
+Synology, UniFi Network, and audit-only Proxmox VE are available as separately
+installed plugins.
 
 ## Intended install
 
@@ -176,6 +176,34 @@ reordering. Full firewall policy replacement is intentionally deferred because
 the official API requires a complete policy document and does not guarantee
 idempotency for every mutation.
 
+## Proxmox VE audit plugin
+
+The initial Proxmox plugin deliberately uses a privilege-separated audit-only
+API token. Register one Proxmox HTTPS origin and enter its token and API node
+name at the appliance terminal:
+
+```text
+stewctl plugin install proxmox
+stewctl server add pve1 --plugin proxmox --endpoint https://pve.example.test:8006
+stewctl server credentials set pve1 --ca-file /path/to/proxmox-ca.crt
+```
+
+Its seven fixed tools report bounded node utilization, LXC and virtual-machine
+inventory, individual guest summaries, storage capacity, recent task outcomes,
+and node/guest diagnostic findings. Output excludes API identities, raw task
+logs, UPIDs, storage paths, MAC addresses, network definitions, mount sources,
+descriptions, and raw API responses. The Proxmox token should have only the
+minimum audit roles needed for these reads; Proxmox documents privilege-separated
+API tokens in its [administration guide](https://pve.proxmox.com/pve-docs/pve-admin-guide.pdf).
+
+Container lifecycle, share configuration, and installer execution are not part
+of this audit release. Community Scripts require root shell access on the host,
+so a later write release will use a separate host-side executor with fixed
+operations, checksum-pinned recipes, explicit confirmations, task tracking, and
+a hard prohibition on mutating the node hosting LabSteward. It will not accept
+arbitrary URLs, scripts, shell text, paths, or environment variables. See the
+[write-executor design](wiki/Proxmox-Write-Executor.md).
+
 OAuth access tokens live for ten minutes and refresh tokens rotate on every use.
 LabSteward persists only token hashes. Revocation removes active access tokens;
 an authentication generation prevents refresh tokens from becoming valid again
@@ -221,7 +249,7 @@ LABSTEWARD_UPDATE_BASE_URL=https://github.com/donselkirk/LabSteward/releases/lat
 - Administrator configuration and TLS keys are isolated under
   `/etc/labsteward-admin`; OAuth state is mode-0600 under
   `/var/lib/labsteward-admin`.
-- A server registration names one plugin and endpoint. Synology server access
+- A server registration names one plugin and endpoint. Plugin server access
   credentials are configured separately at the appliance terminal; the browser
   displays the command but never accepts or retrieves credential values.
 - Remote clients require both a source IP/CIDR match and a unique cryptographic

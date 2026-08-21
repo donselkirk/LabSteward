@@ -89,6 +89,7 @@ def main() -> int:
         plugins_dir = fixture / "plugins"
         (plugins_dir / "synology").mkdir(parents=True)
         (plugins_dir / "unifi").mkdir(parents=True)
+        (plugins_dir / "proxmox").mkdir(parents=True)
         server_secrets.mkdir()
         for name in ("manifest.json", "plugin.py"):
             destination = plugins_dir / "synology" / name
@@ -97,6 +98,10 @@ def main() -> int:
         for name in ("manifest.json", "plugin.py"):
             destination = plugins_dir / "unifi" / name
             destination.write_bytes((PROJECT_ROOT / "plugins/unifi" / name).read_bytes())
+            destination.chmod(0o644)
+        for name in ("manifest.json", "plugin.py"):
+            destination = plugins_dir / "proxmox" / name
+            destination.write_bytes((PROJECT_ROOT / "plugins/proxmox" / name).read_bytes())
             destination.chmod(0o644)
         transport_file = fixture / "transport.json"
         write_json(
@@ -359,6 +364,39 @@ def main() -> int:
                 status == 200 and response["result"]["isError"] is True  # type: ignore[index]
                 and "credentials" in json.dumps(response).lower(),
                 "a write grant must still require protected UniFi credentials",
+            )
+
+            configured["plugins"]["proxmox"] = {"enabled": True, "version": "0.1.0"}
+            configured["servers"]["pve-test"] = {
+                "plugin": "proxmox", "endpoint": "https://pve.example.test:8006",
+            }
+            configured["clients"]["desktop"]["grants"]["pve-test"] = {}
+            write_json(config_file, configured)
+            status, response = request(
+                port, context, token,
+                {
+                    "jsonrpc": "2.0", "id": 10, "method": "tools/call",
+                    "params": {"name": "proxmox_node_summary", "arguments": {"server": "pve-test"}},
+                },
+            )
+            require(
+                status == 200 and response["result"]["isError"] is True  # type: ignore[index]
+                and "permitt" in json.dumps(response).lower(),
+                "Proxmox access without an explicit capability grant must fail",
+            )
+            configured["clients"]["desktop"]["grants"]["pve-test"] = {"node.read": "read"}
+            write_json(config_file, configured)
+            status, response = request(
+                port, context, token,
+                {
+                    "jsonrpc": "2.0", "id": 11, "method": "tools/call",
+                    "params": {"name": "proxmox_node_summary", "arguments": {"server": "pve-test"}},
+                },
+            )
+            require(
+                status == 200 and response["result"]["isError"] is True  # type: ignore[index]
+                and "credentials" in json.dumps(response).lower(),
+                "a Proxmox grant must still require protected audit credentials",
             )
 
             status, _ = request(port, context, "lst_" + "B" * 43, initialize)

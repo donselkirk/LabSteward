@@ -18,8 +18,8 @@ cp "$project_root/plugins/synology/manifest.json" "$fixture/opt/plugins/synology
 cp "$project_root/plugins/synology/plugin.py" "$fixture/opt/plugins/synology/plugin.py"
 cp "$project_root/plugins/unifi/manifest.json" "$fixture/opt/plugins/unifi/manifest.json"
 cp "$project_root/plugins/unifi/plugin.py" "$fixture/opt/plugins/unifi/plugin.py"
-cp "$project_root/plugins/synology/manifest.json" "$fixture/opt/plugins/proxmox/manifest.json"
-cp "$project_root/plugins/synology/plugin.py" "$fixture/opt/plugins/proxmox/plugin.py"
+cp "$project_root/plugins/proxmox/manifest.json" "$fixture/opt/plugins/proxmox/manifest.json"
+cp "$project_root/plugins/proxmox/plugin.py" "$fixture/opt/plugins/proxmox/plugin.py"
 cp "$project_root/src/labsteward.service" "$fixture/systemd/labsteward.service"
 cp "$project_root/src/labsteward-admin.service" "$fixture/systemd/labsteward-admin.service"
 cp "$project_root/src/labsteward-broker.service" "$fixture/systemd/labsteward-broker.service"
@@ -63,8 +63,10 @@ run_manager action run core.status | grep -q '"status": "healthy"'
 run_manager plugin list | grep -q $'^synology\tavailable\tSynology DSM$'
 run_manager plugin install synology | grep -q '^Installed and enabled plugin synology 0.1.0'
 run_manager plugin install unifi | grep -q '^Installed and enabled plugin unifi 0.1.0'
+run_manager plugin install proxmox | grep -q '^Installed and enabled plugin proxmox 0.1.0'
 run_manager server add nas-test --plugin synology --endpoint 'https://nas.example.test:5001' | grep -q '^Added server nas-test'
 run_manager server add network-test --plugin unifi --endpoint 'https://unifi.example.test' | grep -q '^Added server network-test'
+run_manager server add level-test --plugin proxmox --endpoint 'https://pve.example.test:8006' | grep -q '^Added server level-test'
 LABSTEWARD_TEST_SERVER_USERNAME='readonly-user' \
   LABSTEWARD_TEST_SERVER_PASSWORD='test-only-password' \
   run_manager server credentials set nas-test | grep -q '^Stored protected Synology credentials'
@@ -73,6 +75,11 @@ LABSTEWARD_TEST_UNIFI_API_KEY='test-only-api-key-value' \
   LABSTEWARD_TEST_UNIFI_SITE_ID='11111111-1111-4111-8111-111111111111' \
   run_manager server credentials set network-test | grep -q '^Stored protected UniFi credentials'
 [[ "$(stat -c '%a' "$fixture/etc/secrets/servers/network-test.json")" == "640" ]]
+LABSTEWARD_TEST_PROXMOX_TOKEN_ID='audit@pve!labsteward' \
+  LABSTEWARD_TEST_PROXMOX_TOKEN_SECRET='test-only-proxmox-secret' \
+  LABSTEWARD_TEST_PROXMOX_NODE='pve-test' \
+  run_manager server credentials set level-test | grep -q '^Stored protected Proxmox credentials'
+[[ "$(stat -c '%a' "$fixture/etc/secrets/servers/level-test.json")" == "640" ]]
 if run_manager plugin remove synology 2>"$fixture/plugin-in-use-error"; then
   echo "An in-use plugin must not be removed." >&2
   exit 1
@@ -86,45 +93,6 @@ if run_manager validate 2>"$fixture/sanitizer-error"; then
 fi
 grep -q 'output sanitizer is missing or invalid' "$fixture/sanitizer-error"
 mv "$fixture/opt/lib/labsteward_sanitize.py.missing" "$fixture/opt/lib/labsteward_sanitize.py"
-python3 - "$fixture/etc/config.json" "$fixture/opt/catalog/plugins.json" "$fixture/opt/plugins/proxmox/manifest.json" <<'PY'
-import json
-import sys
-
-config_path, catalog_path, manifest_path = sys.argv[1:]
-config = json.load(open(config_path, encoding="utf-8"))
-config["plugins"]["proxmox"] = {"enabled": True, "version": "test"}
-config["servers"]["level-test"] = {
-    "plugin": "proxmox",
-    "endpoint": "https://pve.example.test:8006",
-    "permissions": ["audit.node"],
-}
-with open(config_path, "w", encoding="utf-8") as handle:
-    json.dump(config, handle)
-catalog = json.load(open(catalog_path, encoding="utf-8"))
-catalog["plugins"][0]["version"] = "test"
-catalog["plugins"][0]["permissions"] = {"audit.lxc": "write", "audit.node": "read"}
-catalog["plugins"][0]["permission_descriptions"] = {
-    "audit.lxc": "Inspect or manage LXC workloads.",
-    "audit.node": "Inspect Proxmox nodes.",
-}
-with open(catalog_path, "w", encoding="utf-8") as handle:
-    json.dump(catalog, handle)
-with open(manifest_path, "w", encoding="utf-8") as handle:
-    json.dump({
-        "schema": 1,
-        "id": "proxmox",
-        "version": "test",
-        "core_api": 1,
-        "entrypoint": "plugin.py",
-        "permissions": {
-            "audit.lxc": {"level": "write", "description": "Inspect or manage LXC workloads."},
-            "audit.node": {"level": "read", "description": "Inspect Proxmox nodes."},
-        },
-        "actions": {
-            "proxmox.test": {"tool": "proxmox_test", "permission": "audit.node", "level": "read"}
-        },
-    }, handle)
-PY
 run_manager client add agent1 --source 192.0.2.40 >"$fixture/client-add"
 token="$(tail -n 1 "$fixture/client-add")"
 [[ "$token" =~ ^lst_[A-Za-z0-9_-]{43}$ ]]
@@ -144,7 +112,7 @@ if grep -qF "$rotated_token" "$fixture/etc/config.json" "$fixture/etc/secrets/cl
 fi
 run_manager client source set agent1 192.0.2.41/32 | grep -q '^Set 1 source restriction'
 grep -q $'^agent1\tenabled\t192.0.2.41/32\t0 server grant(s)$' < <(run_manager client list)
-if run_manager client permission set agent1 level-test audit.node=write 2>"$fixture/assign-error"; then
+if run_manager client permission set agent1 level-test node.read=read 2>"$fixture/assign-error"; then
   echo "Permissions must not be configured before assigning a server." >&2
   exit 1
 fi
@@ -155,18 +123,18 @@ if run_manager client server add agent1 level-test 2>"$fixture/duplicate-error";
   exit 1
 fi
 grep -q 'already assigned' "$fixture/duplicate-error"
-run_manager client permission set agent1 level-test audit.node=read audit.lxc=write | grep -q '^Set 2 permission(s)'
+run_manager client permission set agent1 level-test node.read=read guests.read=read diagnostics.read=read storage.read=read tasks.read=read | grep -q '^Set 5 permission(s)'
 run_manager client server add agent1 nas-test | grep -q '^Added server nas-test'
 run_manager client permission set agent1 nas-test system.read=read storage.read=read | grep -q '^Set 2 permission(s)'
 run_manager client server add agent1 network-test | grep -q '^Added server network-test'
 run_manager client permission set agent1 network-test config.read=read diagnostics.read=read clients.read=read firewall.rules=write | grep -q '^Set 4 permission(s)'
-python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["clients"]["agent1"]["grants"]["level-test"] == {"audit.lxc":"write","audit.node":"read"}' "$fixture/etc/config.json"
+python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["clients"]["agent1"]["grants"]["level-test"] == {"diagnostics.read":"read","guests.read":"read","node.read":"read","storage.read":"read","tasks.read":"read"}' "$fixture/etc/config.json"
 if run_manager client permission set agent1 level-test audit.unknown=read 2>"$fixture/permission-error"; then
   echo "An undeclared plugin permission must be rejected." >&2
   exit 1
 fi
 grep -q 'not declared' "$fixture/permission-error"
-if run_manager client permission set agent1 missing audit.node 2>"$fixture/grant-error"; then
+if run_manager client permission set agent1 missing node.read 2>"$fixture/grant-error"; then
   echo "A client grant must reference a registered server." >&2
   exit 1
 fi
@@ -191,26 +159,13 @@ run_manager server credentials remove nas-test --yes | grep -q '^Removed protect
 run_manager plugin remove synology | grep -q '^Disabled and removed plugin registration synology'
 run_manager server credentials remove network-test --yes | grep -q '^Removed protected credentials'
 run_manager plugin remove unifi | grep -q '^Disabled and removed plugin registration unifi'
+run_manager server credentials remove level-test --yes | grep -q '^Removed protected credentials'
+run_manager plugin remove proxmox | grep -q '^Disabled and removed plugin registration proxmox'
 run_manager client revoke agent1 --yes | grep -q '^Revoked and removed client agent1'
 [[ ! -e "$fixture/etc/secrets/clients/agent1.json" ]]
 run_manager client list | grep -q '^No remote clients are registered.$'
 run_manager validate | grep -q '^PASS:'
-python3 - "$fixture/etc/config.json" <<'PY'
-import json
-import sys
-
-path = sys.argv[1]
-config = json.load(open(path, encoding="utf-8"))
-config["plugins"].pop("proxmox")
-with open(path, "w", encoding="utf-8") as handle:
-    json.dump(config, handle)
-PY
-run_manager plugin list | grep -q $'^proxmox\tplanned\tProxmox VE$'
-if run_manager plugin install proxmox 2>"$fixture/error"; then
-  echo "A planned plugin must not install." >&2
-  exit 1
-fi
-grep -q 'not yet available' "$fixture/error"
+run_manager plugin list | grep -q $'^proxmox\tavailable\tProxmox VE$'
 if run_manager server add pve1 --plugin proxmox --endpoint 'https://user:pass@example.test' 2>"$fixture/error"; then
   echo "An endpoint containing credentials must be rejected." >&2
   exit 1

@@ -4,10 +4,23 @@
     {
       "id": "proxmox",
       "name": "Proxmox VE",
-      "status": "planned",
-      "description": "Scoped Proxmox node, LXC, storage, task, and backup access.",
-      "permissions": {},
-      "permission_descriptions": {}
+      "status": "available",
+      "version": "0.1.0",
+      "description": "Audit-only Proxmox node, LXC, virtual-machine, storage, task, and diagnostic access.",
+      "permissions": {
+        "diagnostics.read": "read",
+        "guests.read": "read",
+        "node.read": "read",
+        "storage.read": "read",
+        "tasks.read": "read"
+      },
+      "permission_descriptions": {
+        "diagnostics.read": "Diagnose node, storage, task, LXC, and virtual-machine health from bounded API data.",
+        "guests.read": "List and inspect sanitized LXC and virtual-machine state and configuration.",
+        "node.read": "Read bounded Proxmox node health, version, and resource utilization.",
+        "storage.read": "Read bounded Proxmox storage status and capacity without paths or credentials.",
+        "tasks.read": "Read recent task outcomes without worker identities or raw logs."
+      }
     },
     {
       "id": "synology",
