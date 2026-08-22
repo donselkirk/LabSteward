@@ -2371,19 +2371,23 @@ def _safe(value: Any, depth: int = 0) -> Any:
     return str(value)[:256]
 
 
-def runtime_id() -> str:
+def _new_runtime_id() -> str:
     path = LOG_DIR / "runtime.id"
-    try:
-        value = path.read_text(encoding="utf-8").strip()
-    except OSError:
-        value = ""
-    if value:
-        return value
     value = f"rt_{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{secrets.token_hex(4)}"
     LOG_DIR.mkdir(mode=0o750, parents=True, exist_ok=True)
     path.write_text(value + "\n", encoding="utf-8")
     os.chmod(path, 0o640)
     return value
+
+
+_RUNTIME_ID = ""
+
+
+def runtime_id() -> str:
+    global _RUNTIME_ID
+    if not _RUNTIME_ID:
+        _RUNTIME_ID = _new_runtime_id()
+    return _RUNTIME_ID
 
 
 def append(event_type: str, severity: str = "info", component: str = "system", fields: dict[str, Any] | None = None, message: str = "") -> None:
@@ -2461,6 +2465,34 @@ def read(archive: str = "", limit: int = MAX_EVENTS_READ) -> dict[str, Any]:
     except OSError:
         pass
     return {"runtime_id": runtime_id(), "archive": archive, "events": events, "archives": archives[-31:]}
+
+
+def _archive_previous_runtime() -> None:
+    if not CURRENT.exists():
+        return
+    try:
+        first = json.loads(CURRENT.read_text(encoding="utf-8").splitlines()[0])
+        day = str(first.get("timestamp", ""))[:10]
+    except (OSError, IndexError, json.JSONDecodeError):
+        day = dt.datetime.now(dt.timezone.utc).date().isoformat()
+    archive_dir = LOG_DIR / "archive"
+    archive_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
+    destination = archive_dir / f"{day}.jsonl"
+    if destination.exists():
+        with destination.open("ab") as target, CURRENT.open("rb") as source:
+            target.write(source.read())
+        CURRENT.unlink(missing_ok=True)
+    else:
+        CURRENT.replace(destination)
+    os.chmod(destination, 0o640)
+
+
+try:
+    _archive_previous_runtime()
+except OSError:
+    # Logging must not prevent a service from starting when its optional log
+    # directory is temporarily unavailable.
+    pass
 EOF_LABSTEWARD_LOGGER
 chmod 0644 /opt/labsteward/lib/labsteward_log.py
 cat >/opt/labsteward/lib/labsteward_core.py <<'EOF_LABSTEWARD_CORE'
