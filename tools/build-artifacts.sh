@@ -27,6 +27,11 @@ while IFS= read -r line || [[ -n "$line" ]]; do
       cat "${project_root}/src/labsteward_sanitize.py"
       printf "EOF_LABSTEWARD_SANITIZER\nchmod 0644 /opt/labsteward/lib/labsteward_sanitize.py\n"
       ;;
+    "# LABSTEWARD_INSTALL_LOGGER")
+      printf "cat >/opt/labsteward/lib/labsteward_log.py <<'EOF_LABSTEWARD_LOGGER'\n"
+      cat "${project_root}/src/labsteward_log.py"
+      printf "EOF_LABSTEWARD_LOGGER\nchmod 0644 /opt/labsteward/lib/labsteward_log.py\n"
+      ;;
     "# LABSTEWARD_INSTALL_CORE")
       printf "cat >/opt/labsteward/lib/labsteward_core.py <<'EOF_LABSTEWARD_CORE'\n"
       cat "${project_root}/src/labsteward_core.py"

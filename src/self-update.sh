@@ -9,6 +9,7 @@ readonly CORE_PATH="${LABSTEWARD_CORE_FILE:-${BASE_DIR}/lib/labsteward_core.py}"
 readonly MCP_PATH="${LABSTEWARD_MCP_FILE:-${BASE_DIR}/lib/labsteward_mcp.py}"
 readonly ADMIN_PATH="${LABSTEWARD_ADMIN_FILE:-${BASE_DIR}/lib/labsteward_admin.py}"
 readonly BROKER_PATH="${LABSTEWARD_BROKER_FILE:-${BASE_DIR}/lib/labsteward_broker.py}"
+readonly LOG_PATH="${LABSTEWARD_LOG_FILE:-${BASE_DIR}/lib/labsteward_log.py}"
 readonly SYN_PLUGIN_DIR="${LABSTEWARD_SYNOLOGY_PLUGIN_DIR:-${BASE_DIR}/plugins/synology}"
 readonly UNIFI_PLUGIN_DIR="${LABSTEWARD_UNIFI_PLUGIN_DIR:-${BASE_DIR}/plugins/unifi}"
 readonly PROXMOX_PLUGIN_DIR="${LABSTEWARD_PROXMOX_PLUGIN_DIR:-${BASE_DIR}/plugins/proxmox}"
@@ -49,6 +50,8 @@ synology_bundle=0
 unifi_bundle=0
 proxmox_bundle=0
 service_was_active=0
+admin_service_was_active=0
+broker_service_was_active=0
 cleanup() {
   rm -rf "$stage"
   [[ -z "$backup" ]] || rm -rf "$backup"
@@ -99,7 +102,7 @@ if [[ "$update_url" == "$DEFAULT_UPDATE_URL" ]]; then
 fi
 
 download_asset "${asset_url}/SHA256SUMS" "${stage}/SHA256SUMS" "SHA256SUMS"
-required_assets=(stewctl self-update.sh labsteward-sanitize.py plugins.json config.schema.json)
+required_assets=(stewctl self-update.sh labsteward-sanitize.py labsteward-log.py plugins.json config.schema.json)
 optional_runtime_assets=(labsteward-core.py labsteward-mcp.py labsteward-admin.py \
   labsteward-broker.py labsteward-core.service labsteward-admin.service \
   labsteward-broker.service)
@@ -192,6 +195,7 @@ rollback() {
   [[ ! -e "${backup}/manager" ]] || cp -a "${backup}/manager" "$MANAGER_PATH"
   [[ ! -e "${backup}/self-update.sh" ]] || cp -a "${backup}/self-update.sh" "${BASE_DIR}/lib/self-update.sh"
   [[ ! -e "${backup}/labsteward_sanitize.py" ]] || cp -a "${backup}/labsteward_sanitize.py" "$SANITIZER_PATH"
+  [[ ! -e "${backup}/labsteward_log.py" ]] || cp -a "${backup}/labsteward_log.py" "$LOG_PATH"
   if ((runtime_bundle)); then
     if [[ -e "${backup}/labsteward_core.py" ]]; then
       cp -a "${backup}/labsteward_core.py" "$CORE_PATH"
@@ -224,6 +228,12 @@ rollback() {
     "$SYSTEMCTL" daemon-reload >/dev/null 2>&1 || true
     if ((service_was_active)); then
       "$SYSTEMCTL" restart labsteward.service >/dev/null 2>&1 || true
+    fi
+    if ((admin_service_was_active)); then
+      "$SYSTEMCTL" restart labsteward-admin.service >/dev/null 2>&1 || true
+    fi
+    if ((broker_service_was_active)); then
+      "$SYSTEMCTL" restart labsteward-broker.service >/dev/null 2>&1 || true
     fi
   fi
   if ((synology_bundle)); then
@@ -270,9 +280,16 @@ install -d -m 0755 "$backup" "${BASE_DIR}/lib" "${BASE_DIR}/catalog" "${BASE_DIR
 [[ ! -e "$MANAGER_PATH" ]] || cp -a "$MANAGER_PATH" "${backup}/manager"
 [[ ! -e "${BASE_DIR}/lib/self-update.sh" ]] || cp -a "${BASE_DIR}/lib/self-update.sh" "${backup}/self-update.sh"
 [[ ! -e "$SANITIZER_PATH" ]] || cp -a "$SANITIZER_PATH" "${backup}/labsteward_sanitize.py"
+[[ ! -e "$LOG_PATH" ]] || cp -a "$LOG_PATH" "${backup}/labsteward_log.py"
 if ((runtime_bundle)); then
   if "$SYSTEMCTL" is-active --quiet labsteward.service >/dev/null 2>&1; then
     service_was_active=1
+  fi
+  if "$SYSTEMCTL" is-active --quiet labsteward-admin.service >/dev/null 2>&1; then
+    admin_service_was_active=1
+  fi
+  if "$SYSTEMCTL" is-active --quiet labsteward-broker.service >/dev/null 2>&1; then
+    broker_service_was_active=1
   fi
   [[ ! -e "$CORE_PATH" ]] || cp -a "$CORE_PATH" "${backup}/labsteward_core.py"
   [[ ! -e "$MCP_PATH" ]] || cp -a "$MCP_PATH" "${backup}/labsteward_mcp.py"
@@ -305,6 +322,7 @@ install -m 0755 "${stage}/stewctl" "$MANAGER_PATH"
 ln -sfn "$MANAGER_PATH" "$MANAGER_ALIAS_PATH"
 install -m 0755 "${stage}/self-update.sh" "${BASE_DIR}/lib/self-update.sh"
 install -m 0644 "${stage}/labsteward-sanitize.py" "$SANITIZER_PATH"
+install -m 0644 "${stage}/labsteward-log.py" "$LOG_PATH"
 if ((runtime_bundle)); then
   if [[ $EUID -eq 0 ]]; then
     getent group labsteward-admin >/dev/null || groupadd --system labsteward-admin
@@ -342,6 +360,12 @@ chmod 0644 "$UPDATE_URL_FILE"
 "$MANAGER_PATH" validate
 if ((runtime_bundle && service_was_active)); then
   "$SYSTEMCTL" restart labsteward.service
+fi
+if ((runtime_bundle && admin_service_was_active)); then
+  "$SYSTEMCTL" restart labsteward-admin.service
+fi
+if ((runtime_bundle && broker_service_was_active)); then
+  "$SYSTEMCTL" restart labsteward-broker.service
 fi
 trap - ERR
 rm -rf "$backup"

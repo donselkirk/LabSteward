@@ -596,14 +596,14 @@ class AdminHandler(BaseHTTPRequestHandler):
             elif path == "/admin/login":
                 self.require_admin_source()
                 self.login_page()
-            elif path in {"/admin", "/admin/servers", "/admin/plugins"}:
+            elif path in {"/admin", "/admin/servers", "/admin/plugins", "/admin/logs"}:
                 self.require_admin_source()
                 if self.session() is None:
                     self.redirect("/admin/login")
                 else:
-                    page = {"/admin": "clients", "/admin/servers": "servers", "/admin/plugins": "plugins"}[path]
+                    page = {"/admin": "clients", "/admin/servers": "servers", "/admin/plugins": "plugins", "/admin/logs": "logs"}[path]
                     query = parse_qs(urlsplit(self.path).query, keep_blank_values=True, max_num_fields=8)
-                    self.dashboard(page=page, selected_server=query.get("server", [""])[-1])
+                    self.dashboard(page=page, selected_server=query.get("server", [""])[-1], archive=query.get("archive", [""])[-1])
             elif path == "/authorize":
                 self.require_enrollment_source()
                 self.authorize_page()
@@ -738,7 +738,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         )
 
     def dashboard(
-        self, notice: str = "", page: str = "clients", selected_server: str = ""
+        self, notice: str = "", page: str = "clients", selected_server: str = "", archive: str = ""
     ) -> None:
         """Render the focused Clients, Servers, or Plugins administration page."""
         _session_id, session = self.require_session()
@@ -805,7 +805,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             "<div class=page-tabs>"
             f"<a href=/admin class='{'active' if page == 'clients' else ''}'>Clients</a>"
             f"<a href=/admin/servers class='{'active' if page == 'servers' else ''}'>Servers</a>"
-            f"<a href=/admin/plugins class='{'active' if page == 'plugins' else ''}'>Plugins</a></div>"
+            f"<a href=/admin/plugins class='{'active' if page == 'plugins' else ''}'>Plugins</a>"
+            f"<a href=/admin/logs class='{'active' if page == 'logs' else ''}'>Logs</a></div>"
         )
 
         if page == "clients":
@@ -967,6 +968,31 @@ class AdminHandler(BaseHTTPRequestHandler):
                 "<section><h2>Plugins</h2><p class=muted>Plugins define available capabilities and their descriptions.</p>"
                 "<table><thead><tr><th>Plugin</th><th>Status</th><th>Permissions</th><th>Actions</th></tr></thead><tbody>"
                 + ("".join(plugin_rows) or "<tr><td colspan=4>No catalogue entries</td></tr>")
+                + "</tbody></table></section>"
+            )
+        elif page == "logs":
+            log_state = broker_call("logs.read", {"archive": archive, "limit": 100})
+            events = log_state.get("events", []) if isinstance(log_state, dict) else []
+            rows = []
+            for event in events if isinstance(events, list) else []:
+                if not isinstance(event, dict):
+                    continue
+                rows.append(
+                    f"<tr><td>{html.escape(str(event.get('timestamp','')))}</td><td>{html.escape(str(event.get('severity','')))}</td>"
+                    f"<td>{html.escape(str(event.get('component','')))}</td><td>{html.escape(str(event.get('type','')))}</td>"
+                    f"<td>{html.escape(str(event.get('message','')))}</td></tr>"
+                )
+            archives = log_state.get("archives", []) if isinstance(log_state, dict) else []
+            options = "<option value=''>Current runtime</option>" + "".join(
+                f"<option value='{html.escape(str(item))}' {'selected' if str(item) == archive else ''}>{html.escape(str(item))}</option>"
+                for item in archives if isinstance(item, str)
+            )
+            content = (
+                "<section><h2>Logs</h2>"
+                f"<p class=muted>Runtime: {html.escape(str(log_state.get('runtime_id','unknown')))}</p>"
+                f"<form class=inline method=get action=/admin/logs><label for=archive>Archive</label><select id=archive name=archive onchange='this.form.submit()'>{options}</select></form>"
+                "<table><thead><tr><th>Time</th><th>Severity</th><th>Component</th><th>Event</th><th>Message</th></tr></thead><tbody>"
+                + ("".join(rows) or "<tr><td colspan=5>No log events</td></tr>")
                 + "</tbody></table></section>"
             )
         else:

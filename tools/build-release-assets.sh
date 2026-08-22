@@ -31,6 +31,7 @@ install -m 0644 "${project_root}/src/labsteward_core.py" "${output}/labsteward-c
 install -m 0644 "${project_root}/src/labsteward_mcp.py" "${output}/labsteward-mcp.py"
 install -m 0644 "${project_root}/src/labsteward_admin.py" "${output}/labsteward-admin.py"
 install -m 0644 "${project_root}/src/labsteward_broker.py" "${output}/labsteward-broker.py"
+install -m 0644 "${project_root}/src/labsteward_log.py" "${output}/labsteward-log.py"
 install -m 0644 "${project_root}/src/labsteward.service" "${output}/labsteward-core.service"
 install -m 0644 "${project_root}/src/labsteward-admin.service" "${output}/labsteward-admin.service"
 install -m 0644 "${project_root}/src/labsteward-broker.service" "${output}/labsteward-broker.service"
@@ -49,7 +50,7 @@ done
 (
   cd "$output"
   sha256sum VERSION COMPATIBILITY api.func build.func config.schema.json core.func \
-    error_handler.func labsteward-admin.py labsteward-admin.service labsteward-broker.py \
+    error_handler.func labsteward-admin.py labsteward-admin.service labsteward-broker.py labsteward-log.py \
     labsteward-broker.service labsteward-core.py labsteward-ct.sh labsteward-install.sh \
     labsteward-mcp.py labsteward-sanitize.py labsteward-core.service labsteward.sh \
     install.func plugins.json self-update.sh stewctl synology-manifest.json \

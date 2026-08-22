@@ -41,6 +41,8 @@ grep -q 'Refusing to downgrade LabSteward' src/self-update.sh
 grep -q 'Private GitHub releases are unavailable' src/self-update.sh
 grep -q 'optional_runtime_assets=(labsteward-core.py labsteward-mcp.py labsteward-admin.py' src/self-update.sh
 grep -q 'update_commands.add_parser("check")' src/labsteward-manager.py
+grep -q 'update.set_defaults(handler=command_self_update)' src/labsteward-manager.py
+grep -q 'commands.add_parser("logs"' src/labsteward-manager.py
 grep -q 'ln -sfn /usr/local/bin/stewctl /usr/local/bin/labsteward' tools/build-artifacts.sh
 grep -q 'prog="stewctl"' src/labsteward-manager.py
 grep -q 'commands.add_parser("status"' src/labsteward-manager.py
@@ -63,6 +65,9 @@ grep -q 'Server endpoints must be HTTPS origins without embedded credentials' sr
 grep -q 'User=labsteward' src/labsteward.service
 grep -q 'User=labsteward-admin' src/labsteward-admin.service
 grep -q 'RestrictAddressFamilies=AF_UNIX' src/labsteward-broker.service
+grep -q '/var/log/labsteward' src/labsteward-broker.service
+grep -q 'LABSTEWARD_INSTALL_LOGGER' src/labsteward-install.sh.in
+grep -q 'labsteward-log.py' tools/build-release-assets.sh src/self-update.sh
 grep -q 'ProtectSystem=strict' src/labsteward.service
 grep -q 'authenticate_client(token or "", source)' src/labsteward_mcp.py
 if grep -q 'X-Forwarded-For' src/labsteward_mcp.py src/labsteward_admin.py; then

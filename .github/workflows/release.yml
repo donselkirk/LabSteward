@@ -45,11 +45,18 @@ jobs:
           bash tests/static-checks.sh
           bash tests/manager-behavior.sh
           python3 tests/sanitizer-behavior.py
+          python3 tests/log-behavior.py
           python3 tests/oauth-behavior.py
           bash tests/self-update-behavior.sh
           bash tests/updater-bridge-behavior.sh
           shellcheck labsteward.sh ct/labsteward.sh src/self-update.sh tools/*.sh tests/*.sh
           git diff --check
+          test -s AI_SPEC.md
+          for required in \
+            'stewctl update' 'Security invariants' 'Data contracts' \
+            'Testing contract' 'Specification validation' 'LABSteward'; do
+            grep -q "$required" AI_SPEC.md
+          done
 
   release:
     if: github.event_name == 'workflow_dispatch'

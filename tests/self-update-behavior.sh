@@ -34,6 +34,7 @@ build_release() {
   install -m 0644 "$project_root/src/labsteward_mcp.py" "$release/labsteward-mcp.py"
   install -m 0644 "$project_root/src/labsteward_admin.py" "$release/labsteward-admin.py"
   install -m 0644 "$project_root/src/labsteward_broker.py" "$release/labsteward-broker.py"
+  install -m 0644 "$project_root/src/labsteward_log.py" "$release/labsteward-log.py"
   install -m 0644 "$project_root/src/labsteward.service" "$release/labsteward-core.service"
   install -m 0644 "$project_root/src/labsteward-admin.service" "$release/labsteward-admin.service"
   install -m 0644 "$project_root/src/labsteward-broker.service" "$release/labsteward-broker.service"
@@ -45,7 +46,7 @@ build_release() {
   install -m 0644 "$project_root/plugins/proxmox/manifest.json" "$release/proxmox-manifest.json"
   install -m 0644 "$project_root/catalog/plugins.json" "$release/plugins.json"
   install -m 0644 "$project_root/schemas/config.schema.json" "$release/config.schema.json"
-  (cd "$release" && sha256sum VERSION stewctl self-update.sh labsteward-sanitize.py \
+  (cd "$release" && sha256sum VERSION stewctl self-update.sh labsteward-sanitize.py labsteward-log.py \
     labsteward-core.py labsteward-mcp.py labsteward-admin.py labsteward-broker.py \
     labsteward-core.service labsteward-admin.service labsteward-broker.service \
     synology-plugin.py synology-manifest.json unifi-plugin.py unifi-manifest.json \
@@ -126,7 +127,7 @@ assert_no_rollback_dirs
 
 build_release v0.1.2
 printf '{"schema":999,"plugins":[]}\n' >"$release/plugins.json"
-(cd "$release" && sha256sum VERSION stewctl self-update.sh labsteward-sanitize.py \
+(cd "$release" && sha256sum VERSION stewctl self-update.sh labsteward-sanitize.py labsteward-log.py \
   labsteward-core.py labsteward-mcp.py labsteward-admin.py labsteward-broker.py \
   labsteward-core.service labsteward-admin.service labsteward-broker.service \
   synology-plugin.py synology-manifest.json unifi-plugin.py unifi-manifest.json \
@@ -143,7 +144,7 @@ assert_no_rollback_dirs
 
 build_release v0.1.3
 printf 'this is not valid python\n' >"$release/labsteward-sanitize.py"
-(cd "$release" && sha256sum VERSION stewctl self-update.sh labsteward-sanitize.py \
+(cd "$release" && sha256sum VERSION stewctl self-update.sh labsteward-sanitize.py labsteward-log.py \
   labsteward-core.py labsteward-mcp.py labsteward-admin.py labsteward-broker.py \
   labsteward-core.service labsteward-admin.service labsteward-broker.service \
   synology-plugin.py synology-manifest.json unifi-plugin.py unifi-manifest.json \

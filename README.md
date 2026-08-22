@@ -55,7 +55,7 @@ stewctl transport test
 stewctl status
 stewctl validate
 stewctl update check
-stewctl update apply
+stewctl update
 ```
 
 `labsteward` is installed as a compatibility and discoverability alias for
@@ -211,11 +211,11 @@ if a device is later re-approved. The legacy `stewctl client add` bearer-token
 flow remains available only for migration and non-OAuth clients.
 
 `stewctl update check` reads only release version metadata and never creates a
-rollback copy. `stewctl update apply` downloads and verifies all release assets
-before creating a rollback copy or replacing core files. The `stewctl
-self-update` command remains as a compatibility alias for applying an update.
-Private GitHub releases are intentionally unsupported by the unauthenticated
-updater; use reviewed manual upgrades until the repository becomes public.
+rollback copy. `stewctl update` downloads and verifies all release assets before
+creating a rollback copy or replacing core files. `stewctl update apply` and
+`stewctl self-update` remain compatibility aliases during migration.
+Public GitHub releases are required so the unauthenticated updater can retrieve
+assets without storing a GitHub credential in the appliance.
 
 Existing v0.1.0-v0.1.2 appliances require the updater-only v0.1.3 bridge before
 v0.2.0 because their updater recognizes only the original runtime bundle. The

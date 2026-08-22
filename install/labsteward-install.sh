@@ -24,6 +24,7 @@ install -d -o root -g root -m 0755 /opt/labsteward /opt/labsteward/lib /opt/labs
 install -d -o root -g labsteward -m 2750 /etc/labsteward
 install -d -o root -g labsteward-admin -m 2750 /etc/labsteward-admin
 install -d -o root -g labsteward -m 2750 /etc/labsteward/secrets /etc/labsteward/secrets/clients /etc/labsteward/secrets/servers
+install -d -o root -g labsteward -m 0750 /var/log/labsteward /var/log/labsteward/archive
 install -d -o labsteward -g labsteward -m 0700 /var/lib/labsteward
 install -d -o labsteward-admin -g labsteward-admin -m 0700 /var/lib/labsteward-admin
 
@@ -1620,6 +1621,25 @@ def command_update_check(_: argparse.Namespace) -> None:
     os.execv(str(SELF_UPDATE), [str(SELF_UPDATE), "--check"])
 
 
+def command_logs(args: argparse.Namespace) -> None:
+    log_dir = Path(os.environ.get("LABSTEWARD_LOG_DIR", "/var/log/labsteward"))
+    archive = args.archive or ""
+    if archive and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", archive):
+        raise UserError("Archive must be YYYY-MM-DD")
+    path = log_dir / "current.jsonl" if not archive else log_dir / "archive" / f"{archive}.jsonl"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()[-100:]
+    except OSError:
+        lines = []
+    for line in reversed(lines):
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            print(json.dumps(value, sort_keys=True))
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="stewctl", description="Manage the LabSteward appliance")
     commands = root.add_subparsers(dest="command", required=True)
@@ -1628,6 +1648,9 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("configure").set_defaults(handler=command_configure)
     commands.add_parser("validate").set_defaults(handler=command_validate)
     commands.add_parser("self-update").set_defaults(handler=command_self_update)
+    logs = commands.add_parser("logs", help="Read sanitized runtime logs")
+    logs.add_argument("--archive")
+    logs.set_defaults(handler=command_logs)
 
     action = commands.add_parser("action")
     action_commands = action.add_subparsers(dest="action_command", required=True)
@@ -1699,8 +1722,9 @@ def parser() -> argparse.ArgumentParser:
     create_admin_tls.add_argument("--yes", action="store_true")
     create_admin_tls.set_defaults(handler=command_admin_tls_create)
 
-    update = commands.add_parser("update")
-    update_commands = update.add_subparsers(dest="update_command", required=True)
+    update = commands.add_parser("update", help="Apply the latest validated release")
+    update.set_defaults(handler=command_self_update)
+    update_commands = update.add_subparsers(dest="update_command", required=False)
     update_commands.add_parser("check").set_defaults(handler=command_update_check)
     update_commands.add_parser("apply").set_defaults(handler=command_self_update)
 
@@ -1809,6 +1833,7 @@ readonly CORE_PATH="${LABSTEWARD_CORE_FILE:-${BASE_DIR}/lib/labsteward_core.py}"
 readonly MCP_PATH="${LABSTEWARD_MCP_FILE:-${BASE_DIR}/lib/labsteward_mcp.py}"
 readonly ADMIN_PATH="${LABSTEWARD_ADMIN_FILE:-${BASE_DIR}/lib/labsteward_admin.py}"
 readonly BROKER_PATH="${LABSTEWARD_BROKER_FILE:-${BASE_DIR}/lib/labsteward_broker.py}"
+readonly LOG_PATH="${LABSTEWARD_LOG_FILE:-${BASE_DIR}/lib/labsteward_log.py}"
 readonly SYN_PLUGIN_DIR="${LABSTEWARD_SYNOLOGY_PLUGIN_DIR:-${BASE_DIR}/plugins/synology}"
 readonly UNIFI_PLUGIN_DIR="${LABSTEWARD_UNIFI_PLUGIN_DIR:-${BASE_DIR}/plugins/unifi}"
 readonly PROXMOX_PLUGIN_DIR="${LABSTEWARD_PROXMOX_PLUGIN_DIR:-${BASE_DIR}/plugins/proxmox}"
@@ -1849,6 +1874,8 @@ synology_bundle=0
 unifi_bundle=0
 proxmox_bundle=0
 service_was_active=0
+admin_service_was_active=0
+broker_service_was_active=0
 cleanup() {
   rm -rf "$stage"
   [[ -z "$backup" ]] || rm -rf "$backup"
@@ -1899,7 +1926,7 @@ if [[ "$update_url" == "$DEFAULT_UPDATE_URL" ]]; then
 fi
 
 download_asset "${asset_url}/SHA256SUMS" "${stage}/SHA256SUMS" "SHA256SUMS"
-required_assets=(stewctl self-update.sh labsteward-sanitize.py plugins.json config.schema.json)
+required_assets=(stewctl self-update.sh labsteward-sanitize.py labsteward-log.py plugins.json config.schema.json)
 optional_runtime_assets=(labsteward-core.py labsteward-mcp.py labsteward-admin.py \
   labsteward-broker.py labsteward-core.service labsteward-admin.service \
   labsteward-broker.service)
@@ -1992,6 +2019,7 @@ rollback() {
   [[ ! -e "${backup}/manager" ]] || cp -a "${backup}/manager" "$MANAGER_PATH"
   [[ ! -e "${backup}/self-update.sh" ]] || cp -a "${backup}/self-update.sh" "${BASE_DIR}/lib/self-update.sh"
   [[ ! -e "${backup}/labsteward_sanitize.py" ]] || cp -a "${backup}/labsteward_sanitize.py" "$SANITIZER_PATH"
+  [[ ! -e "${backup}/labsteward_log.py" ]] || cp -a "${backup}/labsteward_log.py" "$LOG_PATH"
   if ((runtime_bundle)); then
     if [[ -e "${backup}/labsteward_core.py" ]]; then
       cp -a "${backup}/labsteward_core.py" "$CORE_PATH"
@@ -2024,6 +2052,12 @@ rollback() {
     "$SYSTEMCTL" daemon-reload >/dev/null 2>&1 || true
     if ((service_was_active)); then
       "$SYSTEMCTL" restart labsteward.service >/dev/null 2>&1 || true
+    fi
+    if ((admin_service_was_active)); then
+      "$SYSTEMCTL" restart labsteward-admin.service >/dev/null 2>&1 || true
+    fi
+    if ((broker_service_was_active)); then
+      "$SYSTEMCTL" restart labsteward-broker.service >/dev/null 2>&1 || true
     fi
   fi
   if ((synology_bundle)); then
@@ -2070,9 +2104,16 @@ install -d -m 0755 "$backup" "${BASE_DIR}/lib" "${BASE_DIR}/catalog" "${BASE_DIR
 [[ ! -e "$MANAGER_PATH" ]] || cp -a "$MANAGER_PATH" "${backup}/manager"
 [[ ! -e "${BASE_DIR}/lib/self-update.sh" ]] || cp -a "${BASE_DIR}/lib/self-update.sh" "${backup}/self-update.sh"
 [[ ! -e "$SANITIZER_PATH" ]] || cp -a "$SANITIZER_PATH" "${backup}/labsteward_sanitize.py"
+[[ ! -e "$LOG_PATH" ]] || cp -a "$LOG_PATH" "${backup}/labsteward_log.py"
 if ((runtime_bundle)); then
   if "$SYSTEMCTL" is-active --quiet labsteward.service >/dev/null 2>&1; then
     service_was_active=1
+  fi
+  if "$SYSTEMCTL" is-active --quiet labsteward-admin.service >/dev/null 2>&1; then
+    admin_service_was_active=1
+  fi
+  if "$SYSTEMCTL" is-active --quiet labsteward-broker.service >/dev/null 2>&1; then
+    broker_service_was_active=1
   fi
   [[ ! -e "$CORE_PATH" ]] || cp -a "$CORE_PATH" "${backup}/labsteward_core.py"
   [[ ! -e "$MCP_PATH" ]] || cp -a "$MCP_PATH" "${backup}/labsteward_mcp.py"
@@ -2105,6 +2146,7 @@ install -m 0755 "${stage}/stewctl" "$MANAGER_PATH"
 ln -sfn "$MANAGER_PATH" "$MANAGER_ALIAS_PATH"
 install -m 0755 "${stage}/self-update.sh" "${BASE_DIR}/lib/self-update.sh"
 install -m 0644 "${stage}/labsteward-sanitize.py" "$SANITIZER_PATH"
+install -m 0644 "${stage}/labsteward-log.py" "$LOG_PATH"
 if ((runtime_bundle)); then
   if [[ $EUID -eq 0 ]]; then
     getent group labsteward-admin >/dev/null || groupadd --system labsteward-admin
@@ -2142,6 +2184,12 @@ chmod 0644 "$UPDATE_URL_FILE"
 "$MANAGER_PATH" validate
 if ((runtime_bundle && service_was_active)); then
   "$SYSTEMCTL" restart labsteward.service
+fi
+if ((runtime_bundle && admin_service_was_active)); then
+  "$SYSTEMCTL" restart labsteward-admin.service
+fi
+if ((runtime_bundle && broker_service_was_active)); then
+  "$SYSTEMCTL" restart labsteward-broker.service
 fi
 trap - ERR
 rm -rf "$backup"
@@ -2285,6 +2333,136 @@ def sanitize_result(
     return walk(value, 0)
 EOF_LABSTEWARD_SANITIZER
 chmod 0644 /opt/labsteward/lib/labsteward_sanitize.py
+cat >/opt/labsteward/lib/labsteward_log.py <<'EOF_LABSTEWARD_LOGGER'
+#!/usr/bin/env python3
+"""Bounded, sanitized LABSteward runtime and audit log storage."""
+
+from __future__ import annotations
+
+import datetime as dt
+import json
+import os
+import re
+import secrets
+import tempfile
+from pathlib import Path
+from typing import Any
+
+LOG_DIR = Path(os.environ.get("LABSTEWARD_LOG_DIR", "/var/log/labsteward"))
+CURRENT = LOG_DIR / "current.jsonl"
+MAX_EVENT_BYTES = 8192
+MAX_EVENTS_READ = 200
+SECRET_KEY = re.compile(r"(?:pass|token|secret|credential|authorization|cookie|csrf|private|api[-_]?key)", re.I)
+SENSITIVE_TEXT = re.compile(r"(?:bearer\s+|lst_[A-Za-z0-9_-]+|lsa_[A-Za-z0-9_-]+|lsc_[A-Za-z0-9_-]+|-----BEGIN [^-]+-----)", re.I)
+
+
+def _safe(value: Any, depth: int = 0) -> Any:
+    if depth > 3:
+        return "[TRUNCATED]"
+    if isinstance(value, dict):
+        return {str(k): "[REDACTED]" if SECRET_KEY.search(str(k)) else _safe(v, depth + 1) for k, v in list(value.items())[:32]}
+    if isinstance(value, (list, tuple)):
+        return [_safe(v, depth + 1) for v in list(value)[:32]]
+    if isinstance(value, str):
+        text = SENSITIVE_TEXT.sub("[REDACTED]", value)
+        return text[:1024]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return str(value)[:256]
+
+
+def runtime_id() -> str:
+    path = LOG_DIR / "runtime.id"
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        value = ""
+    if value:
+        return value
+    value = f"rt_{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{secrets.token_hex(4)}"
+    LOG_DIR.mkdir(mode=0o750, parents=True, exist_ok=True)
+    path.write_text(value + "\n", encoding="utf-8")
+    os.chmod(path, 0o640)
+    return value
+
+
+def append(event_type: str, severity: str = "info", component: str = "system", fields: dict[str, Any] | None = None, message: str = "") -> None:
+    record = {
+        "timestamp": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "runtime_id": runtime_id(),
+        "type": str(event_type)[:80],
+        "severity": str(severity)[:16],
+        "component": str(component)[:48],
+        "message": str(_safe(message))[:1024],
+        "fields": _safe(fields or {}),
+    }
+    encoded = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    if len(encoded) > MAX_EVENT_BYTES:
+        record["fields"] = {"notice": "event fields truncated"}
+        encoded = (json.dumps(record, sort_keys=True) + "\n").encode()
+    LOG_DIR.mkdir(mode=0o750, parents=True, exist_ok=True)
+    _rotate_and_prune(record["timestamp"][:10])
+    with CURRENT.open("ab") as handle:
+        handle.write(encoded[:MAX_EVENT_BYTES])
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(CURRENT, 0o640)
+
+
+def _rotate_and_prune(today: str) -> None:
+    archive_dir = LOG_DIR / "archive"
+    archive_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
+    if CURRENT.exists():
+        try:
+            first = json.loads(CURRENT.read_text(encoding="utf-8").splitlines()[0])
+            previous = str(first.get("timestamp", ""))[:10]
+        except (OSError, IndexError, json.JSONDecodeError):
+            previous = today
+        if previous and previous != today:
+            destination = archive_dir / f"{previous}.jsonl"
+            temporary = archive_dir / f".{previous}.{os.getpid()}.tmp"
+            CURRENT.replace(temporary)
+            if destination.exists():
+                with destination.open("ab") as target, temporary.open("rb") as source:
+                    target.write(source.read())
+                temporary.unlink(missing_ok=True)
+            else:
+                temporary.replace(destination)
+            os.chmod(destination, 0o640)
+    cutoff = dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=30)
+    for path in archive_dir.glob("*.jsonl"):
+        try:
+            if dt.date.fromisoformat(path.stem) < cutoff:
+                path.unlink(missing_ok=True)
+        except ValueError:
+            continue
+
+
+def read(archive: str = "", limit: int = MAX_EVENTS_READ) -> dict[str, Any]:
+    limit = max(1, min(int(limit), MAX_EVENTS_READ))
+    path = CURRENT if not archive else LOG_DIR / "archive" / f"{archive}.jsonl"
+    if archive and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", archive):
+        raise ValueError("invalid archive date")
+    events: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()[-limit:]
+    except OSError:
+        lines = []
+    for line in reversed(lines):
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            events.append(_safe(value))
+    archives = []
+    try:
+        archives = sorted(p.stem for p in (LOG_DIR / "archive").glob("*.jsonl") if re.fullmatch(r"\d{4}-\d{2}-\d{2}", p.stem))
+    except OSError:
+        pass
+    return {"runtime_id": runtime_id(), "archive": archive, "events": events, "archives": archives[-31:]}
+EOF_LABSTEWARD_LOGGER
+chmod 0644 /opt/labsteward/lib/labsteward_log.py
 cat >/opt/labsteward/lib/labsteward_core.py <<'EOF_LABSTEWARD_CORE'
 #!/usr/bin/env python3
 """Shared, allowlisted LabSteward action dispatcher.
@@ -3871,14 +4049,14 @@ class AdminHandler(BaseHTTPRequestHandler):
             elif path == "/admin/login":
                 self.require_admin_source()
                 self.login_page()
-            elif path in {"/admin", "/admin/servers", "/admin/plugins"}:
+            elif path in {"/admin", "/admin/servers", "/admin/plugins", "/admin/logs"}:
                 self.require_admin_source()
                 if self.session() is None:
                     self.redirect("/admin/login")
                 else:
-                    page = {"/admin": "clients", "/admin/servers": "servers", "/admin/plugins": "plugins"}[path]
+                    page = {"/admin": "clients", "/admin/servers": "servers", "/admin/plugins": "plugins", "/admin/logs": "logs"}[path]
                     query = parse_qs(urlsplit(self.path).query, keep_blank_values=True, max_num_fields=8)
-                    self.dashboard(page=page, selected_server=query.get("server", [""])[-1])
+                    self.dashboard(page=page, selected_server=query.get("server", [""])[-1], archive=query.get("archive", [""])[-1])
             elif path == "/authorize":
                 self.require_enrollment_source()
                 self.authorize_page()
@@ -3923,6 +4101,8 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self.authorize_decision()
             elif path.startswith("/admin/"):
                 self.require_admin_source()
+                if not self.origin_allowed():
+                    raise AdminError("Invalid browser origin")
                 self.admin_operation(path)
             else:
                 self.send_json(404, {"error": "not_found"})
@@ -4011,7 +4191,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         )
 
     def dashboard(
-        self, notice: str = "", page: str = "clients", selected_server: str = ""
+        self, notice: str = "", page: str = "clients", selected_server: str = "", archive: str = ""
     ) -> None:
         """Render the focused Clients, Servers, or Plugins administration page."""
         _session_id, session = self.require_session()
@@ -4078,7 +4258,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             "<div class=page-tabs>"
             f"<a href=/admin class='{'active' if page == 'clients' else ''}'>Clients</a>"
             f"<a href=/admin/servers class='{'active' if page == 'servers' else ''}'>Servers</a>"
-            f"<a href=/admin/plugins class='{'active' if page == 'plugins' else ''}'>Plugins</a></div>"
+            f"<a href=/admin/plugins class='{'active' if page == 'plugins' else ''}'>Plugins</a>"
+            f"<a href=/admin/logs class='{'active' if page == 'logs' else ''}'>Logs</a></div>"
         )
 
         if page == "clients":
@@ -4240,6 +4421,31 @@ class AdminHandler(BaseHTTPRequestHandler):
                 "<section><h2>Plugins</h2><p class=muted>Plugins define available capabilities and their descriptions.</p>"
                 "<table><thead><tr><th>Plugin</th><th>Status</th><th>Permissions</th><th>Actions</th></tr></thead><tbody>"
                 + ("".join(plugin_rows) or "<tr><td colspan=4>No catalogue entries</td></tr>")
+                + "</tbody></table></section>"
+            )
+        elif page == "logs":
+            log_state = broker_call("logs.read", {"archive": archive, "limit": 100})
+            events = log_state.get("events", []) if isinstance(log_state, dict) else []
+            rows = []
+            for event in events if isinstance(events, list) else []:
+                if not isinstance(event, dict):
+                    continue
+                rows.append(
+                    f"<tr><td>{html.escape(str(event.get('timestamp','')))}</td><td>{html.escape(str(event.get('severity','')))}</td>"
+                    f"<td>{html.escape(str(event.get('component','')))}</td><td>{html.escape(str(event.get('type','')))}</td>"
+                    f"<td>{html.escape(str(event.get('message','')))}</td></tr>"
+                )
+            archives = log_state.get("archives", []) if isinstance(log_state, dict) else []
+            options = "<option value=''>Current runtime</option>" + "".join(
+                f"<option value='{html.escape(str(item))}' {'selected' if str(item) == archive else ''}>{html.escape(str(item))}</option>"
+                for item in archives if isinstance(item, str)
+            )
+            content = (
+                "<section><h2>Logs</h2>"
+                f"<p class=muted>Runtime: {html.escape(str(log_state.get('runtime_id','unknown')))}</p>"
+                f"<form class=inline method=get action=/admin/logs><label for=archive>Archive</label><select id=archive name=archive onchange='this.form.submit()'>{options}</select></form>"
+                "<table><thead><tr><th>Time</th><th>Severity</th><th>Component</th><th>Event</th><th>Message</th></tr></thead><tbody>"
+                + ("".join(rows) or "<tr><td colspan=5>No log events</td></tr>")
                 + "</tbody></table></section>"
             )
         else:
@@ -4691,6 +4897,8 @@ import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+import labsteward_log
 
 CONFIG_FILE = Path(os.environ.get("LABSTEWARD_CONFIG_FILE", "/etc/labsteward/config.json"))
 CATALOG_FILE = Path(
@@ -5249,6 +5457,27 @@ def operation_token_revoke(arguments: dict[str, Any]) -> dict[str, Any]:
     return {"revoked": len(snapshot["tokens"]) != before}
 
 
+def operation_logs_read(arguments: dict[str, Any]) -> dict[str, Any]:
+    archive = arguments.get("archive", "")
+    if not isinstance(archive, str) or len(archive) > 16:
+        raise BrokerError("Invalid log archive")
+    try:
+        return labsteward_log.read(archive=archive, limit=arguments.get("limit", 100))
+    except (TypeError, ValueError) as exc:
+        raise BrokerError("Invalid log request") from exc
+
+
+def operation_logs_event(arguments: dict[str, Any]) -> dict[str, Any]:
+    event_type = require_text(arguments.get("type"), "event type", 80)
+    component = require_text(arguments.get("component", "broker"), "component", 48)
+    message = arguments.get("message", "")
+    fields = arguments.get("fields", {})
+    if not isinstance(message, str) or not isinstance(fields, dict):
+        raise BrokerError("Invalid log event")
+    labsteward_log.append(event_type, component=component, message=message, fields=fields)
+    return {"stored": True}
+
+
 OPERATIONS = {
     "state.get": lambda _arguments: public_state(),
     "client.add": operation_client_add,
@@ -5264,6 +5493,8 @@ OPERATIONS = {
     "plugin.remove": operation_plugin_remove,
     "token.put": operation_token_put,
     "token.revoke": operation_token_revoke,
+    "logs.read": operation_logs_read,
+    "logs.event": operation_logs_event,
 }
 
 
@@ -5274,7 +5505,15 @@ def dispatch(request: object) -> dict[str, Any]:
     arguments = request.get("arguments", {})
     if operation not in OPERATIONS or not isinstance(arguments, dict):
         raise BrokerError("Unsupported broker operation")
-    return OPERATIONS[operation](arguments)
+    result = OPERATIONS[operation](arguments)
+    if operation not in {"state.get", "logs.read", "logs.event"}:
+        try:
+            labsteward_log.append("broker.operation", component="broker", fields={"operation": operation}, message="Broker operation completed")
+        except OSError:
+            # Logging must never turn a successful protected registry operation
+            # into a client-visible broker failure.
+            pass
+    return result
 
 
 class BrokerServer(socketserver.ThreadingUnixStreamServer):
@@ -7149,7 +7388,7 @@ ProtectKernelTunables=true
 ProtectProc=invisible
 ProtectSystem=strict
 ProcSubset=pid
-ReadWritePaths=/etc/labsteward /run/labsteward
+ReadWritePaths=/etc/labsteward /run/labsteward /var/log/labsteward
 RestrictAddressFamilies=AF_UNIX
 RestrictNamespaces=true
 RestrictRealtime=true

@@ -1579,6 +1579,25 @@ def command_update_check(_: argparse.Namespace) -> None:
     os.execv(str(SELF_UPDATE), [str(SELF_UPDATE), "--check"])
 
 
+def command_logs(args: argparse.Namespace) -> None:
+    log_dir = Path(os.environ.get("LABSTEWARD_LOG_DIR", "/var/log/labsteward"))
+    archive = args.archive or ""
+    if archive and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", archive):
+        raise UserError("Archive must be YYYY-MM-DD")
+    path = log_dir / "current.jsonl" if not archive else log_dir / "archive" / f"{archive}.jsonl"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()[-100:]
+    except OSError:
+        lines = []
+    for line in reversed(lines):
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            print(json.dumps(value, sort_keys=True))
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="stewctl", description="Manage the LabSteward appliance")
     commands = root.add_subparsers(dest="command", required=True)
@@ -1587,6 +1606,9 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("configure").set_defaults(handler=command_configure)
     commands.add_parser("validate").set_defaults(handler=command_validate)
     commands.add_parser("self-update").set_defaults(handler=command_self_update)
+    logs = commands.add_parser("logs", help="Read sanitized runtime logs")
+    logs.add_argument("--archive")
+    logs.set_defaults(handler=command_logs)
 
     action = commands.add_parser("action")
     action_commands = action.add_subparsers(dest="action_command", required=True)
@@ -1658,8 +1680,9 @@ def parser() -> argparse.ArgumentParser:
     create_admin_tls.add_argument("--yes", action="store_true")
     create_admin_tls.set_defaults(handler=command_admin_tls_create)
 
-    update = commands.add_parser("update")
-    update_commands = update.add_subparsers(dest="update_command", required=True)
+    update = commands.add_parser("update", help="Apply the latest validated release")
+    update.set_defaults(handler=command_self_update)
+    update_commands = update.add_subparsers(dest="update_command", required=False)
     update_commands.add_parser("check").set_defaults(handler=command_update_check)
     update_commands.add_parser("apply").set_defaults(handler=command_self_update)
 

@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+import labsteward_log
+
 CONFIG_FILE = Path(os.environ.get("LABSTEWARD_CONFIG_FILE", "/etc/labsteward/config.json"))
 CATALOG_FILE = Path(
     os.environ.get("LABSTEWARD_CATALOG_FILE", "/opt/labsteward/catalog/plugins.json")
@@ -581,6 +583,27 @@ def operation_token_revoke(arguments: dict[str, Any]) -> dict[str, Any]:
     return {"revoked": len(snapshot["tokens"]) != before}
 
 
+def operation_logs_read(arguments: dict[str, Any]) -> dict[str, Any]:
+    archive = arguments.get("archive", "")
+    if not isinstance(archive, str) or len(archive) > 16:
+        raise BrokerError("Invalid log archive")
+    try:
+        return labsteward_log.read(archive=archive, limit=arguments.get("limit", 100))
+    except (TypeError, ValueError) as exc:
+        raise BrokerError("Invalid log request") from exc
+
+
+def operation_logs_event(arguments: dict[str, Any]) -> dict[str, Any]:
+    event_type = require_text(arguments.get("type"), "event type", 80)
+    component = require_text(arguments.get("component", "broker"), "component", 48)
+    message = arguments.get("message", "")
+    fields = arguments.get("fields", {})
+    if not isinstance(message, str) or not isinstance(fields, dict):
+        raise BrokerError("Invalid log event")
+    labsteward_log.append(event_type, component=component, message=message, fields=fields)
+    return {"stored": True}
+
+
 OPERATIONS = {
     "state.get": lambda _arguments: public_state(),
     "client.add": operation_client_add,
@@ -596,6 +619,8 @@ OPERATIONS = {
     "plugin.remove": operation_plugin_remove,
     "token.put": operation_token_put,
     "token.revoke": operation_token_revoke,
+    "logs.read": operation_logs_read,
+    "logs.event": operation_logs_event,
 }
 
 
@@ -606,7 +631,15 @@ def dispatch(request: object) -> dict[str, Any]:
     arguments = request.get("arguments", {})
     if operation not in OPERATIONS or not isinstance(arguments, dict):
         raise BrokerError("Unsupported broker operation")
-    return OPERATIONS[operation](arguments)
+    result = OPERATIONS[operation](arguments)
+    if operation not in {"state.get", "logs.read", "logs.event"}:
+        try:
+            labsteward_log.append("broker.operation", component="broker", fields={"operation": operation}, message="Broker operation completed")
+        except OSError:
+            # Logging must never turn a successful protected registry operation
+            # into a client-visible broker failure.
+            pass
+    return result
 
 
 class BrokerServer(socketserver.ThreadingUnixStreamServer):
