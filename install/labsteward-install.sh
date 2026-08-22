@@ -3780,10 +3780,14 @@ class AdminHandler(BaseHTTPRequestHandler):
         return value
 
     def origin_allowed(self) -> bool:
-        origin = self.headers.get("Origin", "").strip().rstrip("/")
         issuer = str(self.server.issuer).strip().rstrip("/")  # type: ignore[attr-defined]
+        origin = self.headers.get("Origin", "").strip().rstrip("/")
+        # Some browsers omit Origin (or send an opaque `null` origin) for a
+        # same-origin form submission when using a locally trusted/self-signed
+        # certificate. In that case require a same-origin HTTPS Referer rather
+        # than accepting the request without a browser provenance signal.
         if not origin or origin.lower() == "null":
-            return False
+            origin = self.headers.get("Referer", "").strip().rstrip("/")
         try:
             parsed_origin = urlsplit(origin)
             parsed_issuer = urlsplit(issuer)
