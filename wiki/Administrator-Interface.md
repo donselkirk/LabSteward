@@ -7,7 +7,9 @@ account, configures source networks, and enables both administrator services.
 
 ## Available controls
 
-- Clients is the main page. It shows authentication type, source restrictions,
+- Clients is the main page. The Add client form creates a migration-only bearer
+  client and shows its token once; OAuth clients are created by the MCP
+  authorization flow. It shows authentication type, source restrictions,
   and immediate revocation. Each client explicitly adds only the servers it needs;
   a server cannot be added twice. Assigned server rows are collapsed by default.
   Expanding a row shows vertically arranged plugin capabilities, descriptions and
@@ -47,8 +49,8 @@ designed and tested.
 ## Browser protections
 
 Administrator routes require an allowed socket source, an authenticated
-source-bound session, exact Origin validation for changes, and a per-session
-CSRF value. Cookies are Secure, HttpOnly, SameSite=Strict, and expire after
+source-bound session, and a per-session CSRF value. Cookies are Secure,
+HttpOnly, SameSite=Strict, and expire after
 fifteen idle minutes. Responses disable framing, MIME sniffing, referrers,
 sensitive browser permissions, caching, and all content sources except the
 same-origin stylesheet and forms.

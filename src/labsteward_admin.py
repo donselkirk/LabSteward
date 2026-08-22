@@ -871,7 +871,8 @@ class AdminHandler(BaseHTTPRequestHandler):
                     f"<h4>Server access</h4>{access_content}<h4>Add server</h4>{add_server}</div>"
                 )
             content = (
-                "<section><h2>Clients</h2><p class=muted>Manage source restrictions and explicitly assigned servers. Expand a server only when you need to change its permissions.</p>"
+                "<section><div class=client-head><div><h2>Clients</h2><p class=muted>Manage source restrictions and explicitly assigned servers. Expand a server only when you need to change its permissions.</p></div>"
+                f"<form class=inline method=post action=/admin/client/add><input type=hidden name=csrf value='{csrf}'><input name=client required pattern='[a-z][a-z0-9-]{{0,31}}' placeholder='Client name' aria-label='New client name'><input name=source required placeholder='IP or CIDR' aria-label='New client source'><button type=submit>Add client</button></form></div>"
                 + ("".join(client_cards) or "<p>No clients</p>") + "</section>"
             )
         elif page == "servers":
@@ -994,6 +995,14 @@ class AdminHandler(BaseHTTPRequestHandler):
         if path == "/admin/client/revoke":
             broker_call("client.revoke", {"client": form.get("client", "")})
             self.dashboard("Client revoked, removed, and all active OAuth access tokens removed.")
+        elif path == "/admin/client/add":
+            result = broker_call(
+                "client.add",
+                {"client": form.get("client", ""), "display_name": form.get("client", ""), "source": form.get("source", "")},
+            )
+            self.dashboard(
+                f"Client {result['client']} added. Bearer token (shown once): {result['token']}"
+            )
         elif path == "/admin/client/sources":
             broker_call(
                 "client.sources",

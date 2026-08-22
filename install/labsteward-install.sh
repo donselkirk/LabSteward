@@ -3923,8 +3923,6 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self.authorize_decision()
             elif path.startswith("/admin/"):
                 self.require_admin_source()
-                if not self.origin_allowed():
-                    raise AdminError("Invalid browser origin")
                 self.admin_operation(path)
             else:
                 self.send_json(404, {"error": "not_found"})
@@ -4146,7 +4144,8 @@ class AdminHandler(BaseHTTPRequestHandler):
                     f"<h4>Server access</h4>{access_content}<h4>Add server</h4>{add_server}</div>"
                 )
             content = (
-                "<section><h2>Clients</h2><p class=muted>Manage source restrictions and explicitly assigned servers. Expand a server only when you need to change its permissions.</p>"
+                "<section><div class=client-head><div><h2>Clients</h2><p class=muted>Manage source restrictions and explicitly assigned servers. Expand a server only when you need to change its permissions.</p></div>"
+                f"<form class=inline method=post action=/admin/client/add><input type=hidden name=csrf value='{csrf}'><input name=client required pattern='[a-z][a-z0-9-]{{0,31}}' placeholder='Client name' aria-label='New client name'><input name=source required placeholder='IP or CIDR' aria-label='New client source'><button type=submit>Add client</button></form></div>"
                 + ("".join(client_cards) or "<p>No clients</p>") + "</section>"
             )
         elif page == "servers":
@@ -4269,6 +4268,14 @@ class AdminHandler(BaseHTTPRequestHandler):
         if path == "/admin/client/revoke":
             broker_call("client.revoke", {"client": form.get("client", "")})
             self.dashboard("Client revoked, removed, and all active OAuth access tokens removed.")
+        elif path == "/admin/client/add":
+            result = broker_call(
+                "client.add",
+                {"client": form.get("client", ""), "display_name": form.get("client", ""), "source": form.get("source", "")},
+            )
+            self.dashboard(
+                f"Client {result['client']} added. Bearer token (shown once): {result['token']}"
+            )
         elif path == "/admin/client/sources":
             broker_call(
                 "client.sources",
@@ -4674,6 +4681,7 @@ import grp
 import json
 import os
 import re
+import secrets
 import socket
 import socketserver
 import struct
@@ -5001,6 +5009,35 @@ def operation_client_approve(arguments: dict[str, Any]) -> dict[str, Any]:
     return {"client": client_id, "auth_generation": generation}
 
 
+def operation_client_add(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Create a migration-only bearer client and return its token once."""
+    client_id = require_id(arguments.get("client"), "client ID", IDENTIFIER)
+    display_name = require_text(arguments.get("display_name", client_id), "display name", 80)
+    source = require_source(arguments.get("source"))
+    config = load_config()
+    if client_id in config["clients"]:
+        raise BrokerError("Client ID is already in use")
+    token = f"lst_{secrets.token_urlsafe(32)}"
+    atomic_write(
+        CLIENT_SECRETS_DIR / f"{client_id}.json",
+        {"schema": 1, "algorithm": "sha256", "digest": hashlib.sha256(token.encode()).hexdigest()},
+        0o640,
+    )
+    config["clients"][client_id] = {
+        "enabled": True,
+        "sources": [source],
+        "grants": {},
+        "auth": "legacy_token",
+        "display_name": display_name,
+    }
+    try:
+        atomic_write(CONFIG_FILE, config)
+    except Exception:
+        (CLIENT_SECRETS_DIR / f"{client_id}.json").unlink(missing_ok=True)
+        raise
+    return {"client": client_id, "token": token}
+
+
 def operation_client_revoke(arguments: dict[str, Any]) -> dict[str, Any]:
     client_id = require_id(arguments.get("client"), "client ID", IDENTIFIER)
     config = load_config()
@@ -5214,6 +5251,7 @@ def operation_token_revoke(arguments: dict[str, Any]) -> dict[str, Any]:
 
 OPERATIONS = {
     "state.get": lambda _arguments: public_state(),
+    "client.add": operation_client_add,
     "client.approve": operation_client_approve,
     "client.revoke": operation_client_revoke,
     "client.sources": operation_client_sources,

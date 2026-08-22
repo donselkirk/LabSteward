@@ -13,6 +13,7 @@ import grp
 import json
 import os
 import re
+import secrets
 import socket
 import socketserver
 import struct
@@ -340,6 +341,35 @@ def operation_client_approve(arguments: dict[str, Any]) -> dict[str, Any]:
     return {"client": client_id, "auth_generation": generation}
 
 
+def operation_client_add(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Create a migration-only bearer client and return its token once."""
+    client_id = require_id(arguments.get("client"), "client ID", IDENTIFIER)
+    display_name = require_text(arguments.get("display_name", client_id), "display name", 80)
+    source = require_source(arguments.get("source"))
+    config = load_config()
+    if client_id in config["clients"]:
+        raise BrokerError("Client ID is already in use")
+    token = f"lst_{secrets.token_urlsafe(32)}"
+    atomic_write(
+        CLIENT_SECRETS_DIR / f"{client_id}.json",
+        {"schema": 1, "algorithm": "sha256", "digest": hashlib.sha256(token.encode()).hexdigest()},
+        0o640,
+    )
+    config["clients"][client_id] = {
+        "enabled": True,
+        "sources": [source],
+        "grants": {},
+        "auth": "legacy_token",
+        "display_name": display_name,
+    }
+    try:
+        atomic_write(CONFIG_FILE, config)
+    except Exception:
+        (CLIENT_SECRETS_DIR / f"{client_id}.json").unlink(missing_ok=True)
+        raise
+    return {"client": client_id, "token": token}
+
+
 def operation_client_revoke(arguments: dict[str, Any]) -> dict[str, Any]:
     client_id = require_id(arguments.get("client"), "client ID", IDENTIFIER)
     config = load_config()
@@ -553,6 +583,7 @@ def operation_token_revoke(arguments: dict[str, Any]) -> dict[str, Any]:
 
 OPERATIONS = {
     "state.get": lambda _arguments: public_state(),
+    "client.add": operation_client_add,
     "client.approve": operation_client_approve,
     "client.revoke": operation_client_revoke,
     "client.sources": operation_client_sources,
