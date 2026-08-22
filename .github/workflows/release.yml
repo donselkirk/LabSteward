@@ -46,6 +46,7 @@ jobs:
           bash tests/manager-behavior.sh
           python3 tests/sanitizer-behavior.py
           python3 tests/log-behavior.py
+          python3 tests/ai-spec-behavior.py
           python3 tests/oauth-behavior.py
           bash tests/self-update-behavior.sh
           bash tests/updater-bridge-behavior.sh

@@ -93,6 +93,9 @@ Top-level registries are `plugins`, `servers`, and `clients`.
 
 Plugin manifests declare the plugin ID, version, core API, entrypoint,
 permissions, and fixed actions. The catalog and manifest must agree exactly.
+Current catalog permission vocabulary includes `node.read`, `guests.read`,
+`diagnostics.read`, `storage.read`, `tasks.read`, `system.read`, `clients.read`,
+`config.read`, and `firewall.rules`.
 
 ## 5. CLI contract
 
@@ -218,7 +221,8 @@ Acceptance requires a disposable appliance update and rollback smoke test in CI.
 
 Implemented: core health, TLS MCP transport, administrator UI, OAuth enrollment,
 client/server/plugin registry controls, Synology read-only actions, UniFi
-scoped actions, Proxmox audit-only actions, sanitization, checksummed releases,
+scoped actions, Proxmox audit-only actions, the `synology`, `unifi`, and
+`proxmox` plugins, sanitization, checksummed releases,
 rollback scaffolding, and structured logging foundations.
 
 Expected next: complete admin/broker lifecycle coverage, full Logs page,
@@ -253,4 +257,3 @@ schema field, service, log event, and workflow. Implemented features cannot be
 marked planned; planned features require rationale, prerequisites, security
 impact, tests, and acceptance criteria; and all user-facing branding must use
 **LABSteward**.
-
