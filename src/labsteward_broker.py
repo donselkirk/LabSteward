@@ -24,7 +24,38 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-import labsteward_log
+try:
+    import labsteward_log
+except ImportError:  # compatibility with pre-logging appliances upgrading in place
+    class _EmbeddedLog:
+        directory = Path(os.environ.get("LABSTEWARD_LOG_DIR", "/var/log/labsteward"))
+
+        @staticmethod
+        def append(event_type: str, severity: str = "info", component: str = "broker", fields: dict[str, Any] | None = None, message: str = "") -> None:
+            _EmbeddedLog.directory.mkdir(mode=0o750, parents=True, exist_ok=True)
+            safe = {key: "[REDACTED]" if re.search(r"pass|token|secret|credential|key|cookie|csrf", key, re.I) else str(value)[:512] for key, value in (fields or {}).items()}
+            record = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "runtime_id": "compat", "type": event_type[:80], "severity": severity[:16], "component": component[:48], "message": message[:1024], "fields": safe}
+            with (_EmbeddedLog.directory / "current.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+        @staticmethod
+        def read(archive: str = "", limit: int = 100) -> dict[str, Any]:
+            path = _EmbeddedLog.directory / ("current.jsonl" if not archive else f"archive/{archive}.jsonl")
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()[-max(1, min(int(limit), 200)):]
+            except OSError:
+                lines = []
+            events = []
+            for line in reversed(lines):
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict):
+                    events.append(value)
+            return {"runtime_id": "compat", "archive": archive, "events": events, "archives": []}
+
+    labsteward_log = _EmbeddedLog()
 
 CONFIG_FILE = Path(os.environ.get("LABSTEWARD_CONFIG_FILE", "/etc/labsteward/config.json"))
 CATALOG_FILE = Path(

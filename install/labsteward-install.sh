@@ -1873,6 +1873,7 @@ runtime_bundle=0
 synology_bundle=0
 unifi_bundle=0
 proxmox_bundle=0
+log_bundle=0
 service_was_active=0
 admin_service_was_active=0
 broker_service_was_active=0
@@ -1926,7 +1927,8 @@ if [[ "$update_url" == "$DEFAULT_UPDATE_URL" ]]; then
 fi
 
 download_asset "${asset_url}/SHA256SUMS" "${stage}/SHA256SUMS" "SHA256SUMS"
-required_assets=(stewctl self-update.sh labsteward-sanitize.py labsteward-log.py plugins.json config.schema.json)
+required_assets=(stewctl self-update.sh labsteward-sanitize.py plugins.json config.schema.json)
+optional_log_assets=(labsteward-log.py)
 optional_runtime_assets=(labsteward-core.py labsteward-mcp.py labsteward-admin.py \
   labsteward-broker.py labsteward-core.service labsteward-admin.service \
   labsteward-broker.service)
@@ -2004,6 +2006,14 @@ if ((proxmox_count)); then
     download_asset "${asset_url}/${asset}" "${stage}/${asset}" "$asset"
   done
 fi
+log_count=0
+for asset in "${optional_log_assets[@]}"; do
+  if grep -q " ${asset}$" "${stage}/SHA256SUMS"; then log_count=$((log_count + 1)); fi
+done
+if ((log_count)); then
+  log_bundle=1
+  for asset in "${optional_log_assets[@]}"; do download_asset "${asset_url}/${asset}" "${stage}/${asset}" "$asset"; done
+fi
 (
   cd "$stage"
   grep -q " VERSION$" SHA256SUMS || exit 1
@@ -2019,7 +2029,9 @@ rollback() {
   [[ ! -e "${backup}/manager" ]] || cp -a "${backup}/manager" "$MANAGER_PATH"
   [[ ! -e "${backup}/self-update.sh" ]] || cp -a "${backup}/self-update.sh" "${BASE_DIR}/lib/self-update.sh"
   [[ ! -e "${backup}/labsteward_sanitize.py" ]] || cp -a "${backup}/labsteward_sanitize.py" "$SANITIZER_PATH"
-  [[ ! -e "${backup}/labsteward_log.py" ]] || cp -a "${backup}/labsteward_log.py" "$LOG_PATH"
+  if ((log_bundle)); then
+    [[ ! -e "${backup}/labsteward_log.py" ]] || cp -a "${backup}/labsteward_log.py" "$LOG_PATH"
+  fi
   if ((runtime_bundle)); then
     if [[ -e "${backup}/labsteward_core.py" ]]; then
       cp -a "${backup}/labsteward_core.py" "$CORE_PATH"
@@ -2104,7 +2116,9 @@ install -d -m 0755 "$backup" "${BASE_DIR}/lib" "${BASE_DIR}/catalog" "${BASE_DIR
 [[ ! -e "$MANAGER_PATH" ]] || cp -a "$MANAGER_PATH" "${backup}/manager"
 [[ ! -e "${BASE_DIR}/lib/self-update.sh" ]] || cp -a "${BASE_DIR}/lib/self-update.sh" "${backup}/self-update.sh"
 [[ ! -e "$SANITIZER_PATH" ]] || cp -a "$SANITIZER_PATH" "${backup}/labsteward_sanitize.py"
-[[ ! -e "$LOG_PATH" ]] || cp -a "$LOG_PATH" "${backup}/labsteward_log.py"
+if ((log_bundle)); then
+  [[ ! -e "$LOG_PATH" ]] || cp -a "$LOG_PATH" "${backup}/labsteward_log.py"
+fi
 if ((runtime_bundle)); then
   if "$SYSTEMCTL" is-active --quiet labsteward.service >/dev/null 2>&1; then
     service_was_active=1
@@ -2113,7 +2127,7 @@ if ((runtime_bundle)); then
     admin_service_was_active=1
   fi
   if "$SYSTEMCTL" is-active --quiet labsteward-broker.service >/dev/null 2>&1; then
-    broker_service_was_active=1
+  broker_service_was_active=1
   fi
   [[ ! -e "$CORE_PATH" ]] || cp -a "$CORE_PATH" "${backup}/labsteward_core.py"
   [[ ! -e "$MCP_PATH" ]] || cp -a "$MCP_PATH" "${backup}/labsteward_mcp.py"
@@ -2146,7 +2160,9 @@ install -m 0755 "${stage}/stewctl" "$MANAGER_PATH"
 ln -sfn "$MANAGER_PATH" "$MANAGER_ALIAS_PATH"
 install -m 0755 "${stage}/self-update.sh" "${BASE_DIR}/lib/self-update.sh"
 install -m 0644 "${stage}/labsteward-sanitize.py" "$SANITIZER_PATH"
-install -m 0644 "${stage}/labsteward-log.py" "$LOG_PATH"
+if ((log_bundle)); then
+  install -m 0644 "${stage}/labsteward-log.py" "$LOG_PATH"
+fi
 if ((runtime_bundle)); then
   if [[ $EUID -eq 0 ]]; then
     getent group labsteward-admin >/dev/null || groupadd --system labsteward-admin
@@ -4930,7 +4946,38 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-import labsteward_log
+try:
+    import labsteward_log
+except ImportError:  # compatibility with pre-logging appliances upgrading in place
+    class _EmbeddedLog:
+        directory = Path(os.environ.get("LABSTEWARD_LOG_DIR", "/var/log/labsteward"))
+
+        @staticmethod
+        def append(event_type: str, severity: str = "info", component: str = "broker", fields: dict[str, Any] | None = None, message: str = "") -> None:
+            _EmbeddedLog.directory.mkdir(mode=0o750, parents=True, exist_ok=True)
+            safe = {key: "[REDACTED]" if re.search(r"pass|token|secret|credential|key|cookie|csrf", key, re.I) else str(value)[:512] for key, value in (fields or {}).items()}
+            record = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "runtime_id": "compat", "type": event_type[:80], "severity": severity[:16], "component": component[:48], "message": message[:1024], "fields": safe}
+            with (_EmbeddedLog.directory / "current.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+        @staticmethod
+        def read(archive: str = "", limit: int = 100) -> dict[str, Any]:
+            path = _EmbeddedLog.directory / ("current.jsonl" if not archive else f"archive/{archive}.jsonl")
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()[-max(1, min(int(limit), 200)):]
+            except OSError:
+                lines = []
+            events = []
+            for line in reversed(lines):
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict):
+                    events.append(value)
+            return {"runtime_id": "compat", "archive": archive, "events": events, "archives": []}
+
+    labsteward_log = _EmbeddedLog()
 
 CONFIG_FILE = Path(os.environ.get("LABSTEWARD_CONFIG_FILE", "/etc/labsteward/config.json"))
 CATALOG_FILE = Path(
