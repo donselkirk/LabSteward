@@ -64,3 +64,6 @@
 - Extend checksummed releases and rollback-safe self-updates to carry the MCP
   service, dispatcher, and systemd unit.
 - Add end-to-end protocol and rejection tests without adding resource plugins.
+## Unreleased
+
+- Stop requiring optional browser `Origin`/`Referer` headers for the initial administrator sign-in form; the listener source allowlist and HTTPS transport still protect the endpoint, while authenticated administrator mutations retain strict origin and CSRF checks.

@@ -695,8 +695,11 @@ class AdminHandler(BaseHTTPRequestHandler):
         )
 
     def login(self) -> None:
-        if not self.origin_allowed():
-            raise AdminError("Invalid browser origin")
+        # Login is already restricted by the configured administrator source
+        # network and HTTPS listener. Browsers vary in whether they send an
+        # Origin/Referer header for a plain form POST, so do not make initial
+        # authentication depend on either optional header. Authenticated
+        # administrator mutations retain strict origin and CSRF checks.
         form = self.read_form()
         transaction = form.get("transaction", "")
         if not self.server.login_limiter.allow(self.source):  # type: ignore[attr-defined]
